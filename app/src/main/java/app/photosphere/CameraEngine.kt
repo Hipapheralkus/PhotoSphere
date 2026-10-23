@@ -19,6 +19,7 @@ import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.camera2.params.StreamConfigurationMap
+import android.hardware.display.DisplayManager
 import android.location.Location
 import android.media.ImageReader
 import android.os.Build
@@ -48,6 +49,7 @@ import kotlin.math.min
 /** Camera2 owns JPEG production; this class never decodes or recompresses a photograph. */
 class CameraEngine(context: Context) {
     private val manager = context.applicationContext.getSystemService(CameraManager::class.java)
+    private val displays = context.applicationContext.getSystemService(DisplayManager::class.java)
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var current: CameraRun? = null
 
@@ -56,6 +58,9 @@ class CameraEngine(context: Context) {
 
     /** Bounds of the complete camera frame inside the TextureView, excluding fit-centre bars. */
     fun previewContentBounds(): RectF? = current?.contentBounds?.let(::RectF)
+
+    /** Refresh after an Activity configuration/layout change without reopening the capture session. */
+    fun refreshPreviewTransform(): Unit = onMain { current?.refreshTransform() }
 
     fun open(
         view: TextureView,
@@ -68,6 +73,7 @@ class CameraEngine(context: Context) {
         current = run
         view.isOpaque = false
         view.surfaceTextureListener = run.listener
+        run.monitorDisplay()
         if (view.isAvailable) run.start()
     }
 
@@ -119,6 +125,7 @@ class CameraEngine(context: Context) {
         var saving = false
         var threeATimedOut = false
         var orientation = 0
+        var displayRotationAtCapture = 0
         var result: TotalCaptureResult? = null
         val images = linkedMapOf<Long, ByteArray>()
 
@@ -173,6 +180,25 @@ class CameraEngine(context: Context) {
         private lateinit var diagnostics: JSONObject
         private var requestedKeys = emptySet<CaptureRequest.Key<*>>()
         private var afMode = CaptureRequest.CONTROL_AF_MODE_OFF
+
+        private val displayListener: DisplayManager.DisplayListener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = Unit
+            override fun onDisplayRemoved(displayId: Int) = Unit
+            override fun onDisplayChanged(displayId: Int) {
+                // A 180-degree change can leave the TextureView dimensions unchanged.
+                // Listen to the display as well as SurfaceTexture size callbacks.
+                if (current === this@CameraRun && view.display?.displayId == displayId &&
+                    displayRotationDegrees != (view.display?.rotation ?: Surface.ROTATION_0) * 90) {
+                    refreshTransform()
+                }
+            }
+        }
+
+        fun monitorDisplay() { displays.registerDisplayListener(displayListener, main) }
+
+        fun refreshTransform() {
+            if (!closing.get()) transformPreview()
+        }
 
         val listener: TextureView.SurfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
@@ -450,8 +476,24 @@ class CameraEngine(context: Context) {
         private fun sendStill(pending: Shot) {
             if (pending.sent || pending.completed.get() || closing.get() || shot !== pending) return
             pending.sent = true
+            // AF/AE may have taken time while the user rotated the phone. Sample the current
+            // display on main immediately before dispatch, not when the hold gate first fired.
+            onMain {
+                if (!closing.get() && !pending.completed.get()) {
+                    transformPreview()
+                    val rotation = (view.display?.rotation ?: Surface.ROTATION_0) * 90
+                    if (!handler.post {
+                        if (shot === pending && !pending.completed.get() && !closing.get())
+                            submitStill(pending, rotation)
+                    }) pending.fail("The camera closed before the photograph could be submitted.")
+                }
+            }
+        }
+
+        private fun submitStill(pending: Shot, rotation: Int) {
             try {
-                pending.orientation = ((characteristics[CameraCharacteristics.SENSOR_ORIENTATION] ?: 90) - displayRotationDegrees + 360) % 360
+                pending.displayRotationAtCapture = rotation
+                pending.orientation = ((characteristics[CameraCharacteristics.SENSOR_ORIENTATION] ?: 90) - rotation + 360) % 360
                 val request = camera!!.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     // Keep the repeating preview active. Max-resolution-only and default surfaces
                     // must not be mixed in a single maximum-resolution capture request.
@@ -578,6 +620,7 @@ class CameraEngine(context: Context) {
             val json = JSONObject().put("cameraId", cameraId).put("quality", quality.name)
                 .put("jpegSize", sizeJson(encoded)).put("configuredJpegSize", sizeJson(choice.size))
                 .put("requestedJpegOrientation", pending.orientation).put("maximumResolutionMode", choice.maximumMode)
+                .put("displayRotationDegreesAtCapture", pending.displayRotationAtCapture)
                 .put("threeAWaitTimedOut", pending.threeATimedOut).put("gpsRequested", pending.location != null)
                 .put("captureResultFrameNumber", result.frameNumber)
                 .put("sensorTimestampNs", result[CaptureResult.SENSOR_TIMESTAMP])
@@ -626,14 +669,14 @@ class CameraEngine(context: Context) {
         }
 
         private fun transformPreview() {
+            val rotation = (view.display?.rotation ?: Surface.ROTATION_0) * 90
+            displayRotationDegrees = rotation
             if (!::previewSize.isInitialized || view.width == 0 || view.height == 0) return
             // TextureView already applies sensor orientation. Undo its nonuniform stretch,
             // then apply display rotation. Fit-centre keeps the entire capture framing visible.
             val sensor = characteristics[CameraCharacteristics.SENSOR_ORIENTATION] ?: 90
             val naturalWidth = if (sensor % 180 == 0) previewSize.width else previewSize.height
             val naturalHeight = if (sensor % 180 == 0) previewSize.height else previewSize.width
-            val rotation = (view.display?.rotation ?: Surface.ROTATION_0) * 90
-            displayRotationDegrees = rotation
             val rotatedWidth = if (rotation % 180 == 0) naturalWidth else naturalHeight
             val rotatedHeight = if (rotation % 180 == 0) naturalHeight else naturalWidth
             val fit = min(view.width.toFloat() / rotatedWidth, view.height.toFloat() / rotatedHeight)
@@ -655,13 +698,17 @@ class CameraEngine(context: Context) {
 
         fun preventReopen() {
             autoReopen = false
-            onMain { if (view.surfaceTextureListener === listener) view.surfaceTextureListener = null }
+            onMain {
+                displays.unregisterDisplayListener(displayListener)
+                if (view.surfaceTextureListener === listener) view.surfaceTextureListener = null
+            }
         }
 
         fun shutdown(reason: String, preserveListener: Boolean = false) {
             if (!closing.compareAndSet(false, true)) return
             ready = false
             if (!preserveListener) preventReopen()
+            else onMain { displays.unregisterDisplayListener(displayListener) }
             handler.post {
                 shot?.let { if (!it.saving) { it.images.clear(); it.fail(reason) } }
                 shot = null

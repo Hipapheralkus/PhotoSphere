@@ -5,7 +5,8 @@ A fast, native Android capture prototype for Pixel 10 Pro XL on Android 17. Guid
 ## Prototype scope
 
 - Runtime Camera2 capability inspection, standard and maximum-resolution capture modes.
-- Sensor-based pointing and roll guidance with a continuous steady-hold timer.
+- Sensor-based pointing and roll guidance with smooth visual feedback and a jitter-tolerant steady-hold timer.
+- Automatic portrait/landscape layout, including rotation during capture, and free choice of the next direction.
 - Explicit upper, lower, zenith and nadir targets, per-shot feedback, pause and finish controls.
 - Original JPEGs, capture metadata and a durable session manifest; streaming ZIP export through Android's document picker.
 - No account, network permission, analytics, or cloud upload. Location is optional.
@@ -25,7 +26,7 @@ The project uses the Gradle wrapper and Android Gradle Plugin's built-in Kotlin 
 
 ## Capture
 
-Choose a capture mode, start a sphere, and hold the phone upright. Keep the camera lens at approximately one fixed point. Bring each target into the center, level the phone, and stop moving while the ring fills. Wait for the saved confirmation before moving. Pause whenever needed; finishing early preserves a partial session.
+Choose a capture mode and start a sphere in portrait or landscape. Keep the camera lens at approximately one fixed point. Turn in any direction: the guide selects the nearest remaining target. Bring the light into the center, level the phone, and stop moving while the ring fills. Brief jitter freezes the ring instead of flashing the instructions; sustained movement asks you to adjust. Wait for the saved confirmation before moving. You can change orientation during a session. Pause whenever needed; finishing early preserves a partial session.
 
 Sessions are private app files. Export a ZIP from the session list before uninstalling or clearing app data. Every archive contains the original JPEGs, a JSON manifest, and device camera diagnostics. Sharing the archive shares its photographs and any enabled location information.
 

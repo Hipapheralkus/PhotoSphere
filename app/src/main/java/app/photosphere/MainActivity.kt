@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.*
 import android.graphics.drawable.GradientDrawable
 import android.location.Location
@@ -67,13 +68,16 @@ class MainActivity : Activity() {
     private lateinit var action: Button
     private lateinit var finish: Button
     private lateinit var cameraRoot: FrameLayout
+    private lateinit var previewPane: FrameLayout
+    private lateinit var captureHeader: LinearLayout
     private lateinit var captureControls: LinearLayout
+    private var displayRotation = Surface.ROTATION_0
+    private var rotationGeneration = 0
     private var shellRoot: View? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setDecorFitsSystemWindows(false)
-        window.insetsController?.setSystemBarsAppearance(0, android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS)
         store = SessionStore(this)
         camera = CameraEngine(this)
         tracker = OrientationTracker(this, ::onPose)
@@ -93,6 +97,32 @@ class MainActivity : Activity() {
             if (preview.isAvailable) openCamera()
         }
     }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        when (screen) {
+            "capture" -> {
+                syncDisplayRotation()
+                layoutCapture()
+            }
+            "home" -> showHome()
+            "saved" -> showSaved(completed.size, plan.size)
+            "sessions" -> showSessions()
+        }
+    }
+
+    private fun syncDisplayRotation() {
+        val next = display?.rotation ?: Surface.ROTATION_0
+        tracker.setDisplayRotation(next)
+        if (next != displayRotation) {
+            displayRotation = next
+            rotationGeneration++
+            guidance.reset()
+            poseHistory.clear()
+        }
+    }
+
+    private fun isLandscape() = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     override fun onPause() {
         activityResumed = false
@@ -138,6 +168,7 @@ class MainActivity : Activity() {
             insets
         }
         setContentView(view)
+        window.insetsController?.setSystemBarsAppearance(0, WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS)
         view.requestApplyInsets()
     }
 
@@ -156,16 +187,23 @@ class MainActivity : Activity() {
         brand.addView(text("◉  PhotoSphere", 23, white, true), LinearLayout.LayoutParams(0, -2, 1f))
         brand.addView(chip("EARLY ACCESS"))
         body.addView(brand)
-        body.addView(space(22))
-        body.addView(text("A whole place.\nOne memory.", 39, white, true).apply { letterSpacing = -0.035f; setLineSpacing(0f, 1.02f) })
-        body.addView(space(12))
-        body.addView(text("Look around. Follow the light.\nWe’ll take each photo when you’re still.", 17, muted).apply { setLineSpacing(dp(3).toFloat(), 1f) })
-        body.addView(OrbitIllustration(this), LinearLayout.LayoutParams(-1, dp(186)))
+        val landscape = isLandscape()
+        body.addView(space(if (landscape) 18 else 22))
+        val sections = LinearLayout(this).apply { orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL }
+        val intro = column(0)
+        val choices = column(0)
+        sections.addView(intro, if (landscape) LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(28) } else LinearLayout.LayoutParams(-1, -2))
+        sections.addView(choices, if (landscape) LinearLayout.LayoutParams(0, -2, 1.1f) else LinearLayout.LayoutParams(-1, -2))
+        body.addView(sections)
+        intro.addView(text("A whole place.\nOne memory.", if (landscape) 31 else 39, white, true).apply { letterSpacing = -0.035f; setLineSpacing(0f, 1.02f) })
+        intro.addView(space(12))
+        intro.addView(text("Look around. Follow the light.\nWe’ll take each photo when you’re still.", if (landscape) 15 else 17, muted).apply { setLineSpacing(dp(3).toFloat(), 1f) })
+        intro.addView(OrbitIllustration(this), LinearLayout.LayoutParams(-1, dp(if (landscape) 128 else 186)))
         val modes = row().apply { gravity = Gravity.TOP }
         modes.addView(modeCard("Everyday", "Quick & full resolution", CaptureQuality.FAST), LinearLayout.LayoutParams(0, dp(91), 1f).apply { marginEnd = dp(10) })
-        modes.addView(modeCard("More detail", "Larger photos · slower", CaptureQuality.DETAIL), LinearLayout.LayoutParams(0, dp(91), 1f))
-        body.addView(modes)
-        body.addView(space(17))
+        modes.addView(modeCard("More detail", "Larger if supported", CaptureQuality.DETAIL), LinearLayout.LayoutParams(0, dp(91), 1f))
+        choices.addView(modes)
+        choices.addView(space(if (landscape) 8 else 17))
         val loc = Switch(this).apply {
             text = "Remember this place"
             contentDescription = "Save GPS location with photos. Optional."
@@ -181,16 +219,16 @@ class MainActivity : Activity() {
                 }
             }
         }
-        body.addView(loc)
-        body.addView(text("Optional GPS. Your photos stay on your phone.", 13, muted))
-        body.addView(space(24))
-        body.addView(button("Start a sphere", true) { startRequested() }, LinearLayout.LayoutParams(-1, dp(58)))
-        body.addView(space(10))
-        body.addView(button("Your captures", false) { showSessions() }, LinearLayout.LayoutParams(-1, dp(52)))
-        body.addView(space(18))
-        body.addView(text("CAPTURE PROTOTYPE", 10, mint, true).apply { letterSpacing = .16f; gravity = Gravity.CENTER })
-        body.addView(space(7))
-        body.addView(text("Originals saved for stitching. Sphere assembly comes next.", 12, muted).apply { gravity = Gravity.CENTER })
+        choices.addView(loc)
+        choices.addView(text("Optional GPS. Your photos stay on your phone.", 13, muted))
+        choices.addView(space(if (landscape) 12 else 24))
+        choices.addView(button("Start a sphere", true) { startRequested() }, LinearLayout.LayoutParams(-1, dp(if (landscape) 48 else 58)))
+        choices.addView(space(10))
+        choices.addView(button("Your captures", false) { showSessions() }, LinearLayout.LayoutParams(-1, dp(if (landscape) 48 else 52)))
+        choices.addView(space(18))
+        choices.addView(text("CAPTURE PROTOTYPE", 10, mint, true).apply { letterSpacing = .16f; gravity = Gravity.CENTER })
+        choices.addView(space(7))
+        choices.addView(text("Originals saved for stitching. Sphere assembly comes next.", 12, muted).apply { gravity = Gravity.CENTER })
         body.addView(space(12))
         installRoot(host)
     }
@@ -245,11 +283,13 @@ class MainActivity : Activity() {
         val host = FrameLayout(this).apply { setBackgroundColor(ink) }
         cameraRoot = FrameLayout(this)
         host.addView(cameraRoot, FrameLayout.LayoutParams(-1, -1))
+        previewPane = FrameLayout(this)
+        cameraRoot.addView(previewPane, FrameLayout.LayoutParams(-1, -1))
         preview = TextureView(this)
-        cameraRoot.addView(preview, FrameLayout.LayoutParams(-1, -1))
+        previewPane.addView(preview, FrameLayout.LayoutParams(-1, -1))
         overlay = CaptureOverlay(this)
-        cameraRoot.addView(overlay, FrameLayout.LayoutParams(-1, -1))
-        val top = column(20).apply {
+        previewPane.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+        captureHeader = column(20).apply {
             background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xE60C1815.toInt(), 0x000C1815))
         }
         val header = row()
@@ -260,19 +300,19 @@ class MainActivity : Activity() {
         heading.addView(counter)
         header.addView(heading, LinearLayout.LayoutParams(0, -2, 1f))
         header.addView(button("···", false) { showCameraDetails() }.apply { contentDescription = "Camera details" }, LinearLayout.LayoutParams(dp(48), dp(48)))
-        top.addView(header)
-        top.addView(space(10))
+        captureHeader.addView(header)
+        captureHeader.addView(space(10))
         resolution = text("Checking your camera…", 12, muted).apply { gravity = Gravity.CENTER }
-        top.addView(resolution)
+        captureHeader.addView(resolution)
         map = SphereMapView(this)
-        top.addView(map, LinearLayout.LayoutParams(-1, dp(132)).apply { topMargin = dp(9) })
-        cameraRoot.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        previewPane.addView(captureHeader, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        previewPane.addView(map, FrameLayout.LayoutParams(-1, dp(132), Gravity.TOP))
         captureControls = column(24).apply {
             background = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(0xFF0C1815.toInt(), 0xEB0C1815.toInt(), 0x000C1815))
             setPadding(dp(24), dp(50), dp(24), dp(22))
         }
         statusTitle = text("Let’s find your starting point", 27, white, true).apply { gravity = Gravity.CENTER }
-        statusDetail = text("Hold your phone upright. Keep the lens in one place as you turn.", 15, muted).apply { gravity = Gravity.CENTER; minHeight = dp(48); setLineSpacing(dp(2).toFloat(), 1f) }
+        statusDetail = text("Portrait or landscape. Keep the lens in one place as you turn.", 15, muted).apply { gravity = Gravity.CENTER; minHeight = dp(48); setLineSpacing(dp(2).toFloat(), 1f) }
         captureControls.addView(statusTitle)
         captureControls.addView(space(10))
         captureControls.addView(statusDetail)
@@ -284,6 +324,15 @@ class MainActivity : Activity() {
         finish = button("Save & finish", false) { requestFinish() }.apply { visibility = View.GONE }
         captureControls.addView(finish, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(8) })
         cameraRoot.addView(captureControls, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+        cameraRoot.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or, ob ->
+            if (r - l != or - ol || b - t != ob - ot) layoutCapture()
+        }
+        previewPane.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitGuidanceToPreview() }
+        captureControls.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateOverlayInsets() }
+        captureHeader.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            positionMap()
+            updateOverlayInsets()
+        }
         preview.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, w: Int, h: Int) { if (activityResumed) openCamera() }
             override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, w: Int, h: Int) = Unit
@@ -291,17 +340,77 @@ class MainActivity : Activity() {
             override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
         }
         installRoot(host)
+        cameraRoot.post { layoutCapture() }
         if (activityResumed) startTracking()
         refreshLocation()
     }
 
     private fun startTracking() {
+        syncDisplayRotation()
         if (!tracker.start()) {
             guidanceNotice = "This phone needs an orientation sensor for guided capture."
             statusTitle.text = "Guidance unavailable"
             statusDetail.text = guidanceNotice
             action.isEnabled = false
         }
+    }
+
+    /** Resize existing views: keeping the TextureView attached preserves the camera session. */
+    private fun layoutCapture() {
+        if (screen != "capture" || !::previewPane.isInitialized || cameraRoot.width == 0) return
+        val landscape = isLandscape()
+        val controlsWidth = if (landscape) (cameraRoot.width * .39f).roundToInt().coerceIn(dp(260), dp(340)) else cameraRoot.width
+        previewPane.layoutParams = FrameLayout.LayoutParams(if (landscape) cameraRoot.width - controlsWidth else -1, -1, Gravity.TOP or Gravity.LEFT)
+        captureControls.layoutParams = FrameLayout.LayoutParams(if (landscape) controlsWidth else -1, if (landscape) -1 else -2,
+            if (landscape) Gravity.RIGHT else Gravity.BOTTOM)
+        captureControls.gravity = if (landscape) Gravity.CENTER_VERTICAL else Gravity.TOP
+        captureControls.setPadding(dp(20), dp(if (landscape) 16 else 50), dp(20), dp(if (landscape) 16 else 22))
+        captureControls.background = if (landscape) rounded(ink, 0) else
+            GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(0xFF0C1815.toInt(), 0xEB0C1815.toInt(), 0x000C1815))
+        captureHeader.setPadding(dp(16), dp(if (landscape) 10 else 20), dp(16), dp(10))
+        resolution.visibility = if (landscape) View.GONE else View.VISIBLE
+        captureHeader.getChildAt(1).visibility = if (landscape) View.GONE else View.VISIBLE
+        statusTitle.textSize = if (landscape) 24f else 27f
+        statusDetail.textSize = if (landscape) 14f else 15f
+        action.layoutParams = LinearLayout.LayoutParams(-1, dp(if (landscape) 52 else 56))
+        finish.layoutParams = LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(8) }
+        positionMap()
+        previewPane.post { camera.refreshPreviewTransform(); fitGuidanceToPreview() }
+    }
+
+    private fun positionMap() {
+        if (screen != "capture" || !::map.isInitialized) return
+        val landscape = isLandscape()
+        val params = FrameLayout.LayoutParams(-1, dp(if (landscape) 90 else 132), if (landscape) Gravity.BOTTOM else Gravity.TOP).apply {
+            leftMargin = dp(16); rightMargin = dp(16)
+            topMargin = if (landscape) 0 else captureHeader.bottom
+            bottomMargin = if (landscape) dp(8) else 0
+        }
+        val old = map.layoutParams as? FrameLayout.LayoutParams
+        if (old?.height != params.height || old.gravity != params.gravity || old.topMargin != params.topMargin || old.leftMargin != params.leftMargin) {
+            map.layoutParams = params
+            map.post { updateOverlayInsets() }
+        }
+    }
+
+    private fun fitGuidanceToPreview() {
+        if (screen != "capture" || cameraInfo == null) return
+        camera.refreshPreviewTransform()
+        val bounds = camera.previewContentBounds() ?: return
+        val w = bounds.width().roundToInt(); val h = bounds.height().roundToInt()
+        if (w <= 0 || h <= 0) return
+        val old = overlay.layoutParams as FrameLayout.LayoutParams
+        if (old.width != w || old.height != h) {
+            overlay.layoutParams = FrameLayout.LayoutParams(w, h, Gravity.CENTER)
+        }
+        overlay.post { updateOverlayInsets() }
+    }
+
+    private fun updateOverlayInsets() {
+        if (screen != "capture" || !::overlay.isInitialized || overlay.height == 0) return
+        val topEdge = if (isLandscape()) captureHeader.bottom else map.bottom
+        val bottomEdge = if (isLandscape()) map.top else captureControls.top
+        overlay.setOcclusionInsets(max(0, topEdge - overlay.top).toFloat(), max(0, overlay.bottom - bottomEdge).toFloat())
     }
 
     private fun openCamera() {
@@ -311,19 +420,14 @@ class MainActivity : Activity() {
         camera.open(preview, quality, { info ->
             if (generation != sessionGeneration || screen != "capture") return@open
             cameraInfo = info
-            // Match guidance projection to the uncropped, fit-centred camera frame.
-            val rotated = info.sensorOrientation % 180 != 0
-            val pw = if (rotated) info.previewHeight else info.previewWidth
-            val ph = if (rotated) info.previewWidth else info.previewHeight
-            val scale = min(preview.width.toFloat() / pw, preview.height.toFloat() / ph)
-            overlay.layoutParams = FrameLayout.LayoutParams((pw * scale).roundToInt(), (ph * scale).roundToInt(), Gravity.CENTER)
+            fitGuidanceToPreview()
             if (session == null) {
                 plan = CapturePlan.generate(info.horizontalFov, info.verticalFov)
                 counter.text = "Ready to look around"
                 map.setPlan(plan.map { it.yaw to it.pitch }, completed, 0)
                 action.text = "Start here"
                 statusTitle.text = "Let’s find your starting point"
-                statusDetail.text = "Hold your phone upright. Keep the lens in one place as you turn."
+                statusDetail.text = "Portrait or landscape. Keep the lens in one place as you turn."
             } else action.text = if (paused) "Resume capture" else "Pause capture"
             if (session != null && paused) {
                 statusTitle.text = "Ready when you are"
@@ -355,7 +459,7 @@ class MainActivity : Activity() {
     private fun beginSession() {
         val info = cameraInfo ?: return
         if (pose == null || busy) {
-            statusTitle.text = "Hold your phone upright"
+            statusTitle.text = "Finding your direction"
             statusDetail.text = "Waiting for the motion sensors."
             return
         }
@@ -392,17 +496,32 @@ class MainActivity : Activity() {
     }
 
     private fun onPose(value: Pose) {
+        // Also catches a 180° rotation, where Android may keep the same configuration size.
+        if (screen == "capture" && display?.rotation != displayRotation) {
+            syncDisplayRotation()
+            fitGuidanceToPreview()
+            return
+        }
         pose = value
         poseHistory.add(value)
-        if (screen != "capture" || !activityResumed || session == null || paused || busy || targetIndex >= plan.size) return
+        if (screen != "capture" || !activityResumed || session == null || paused || busy || completed.size >= plan.size) return
         val now = SystemClock.elapsedRealtime()
         if (now < savedUntilMs) return
-        val target = plan[targetIndex]
+        val target = TargetSelector.select(value, plan, completed, targetIndex) ?: return
+        if (target.id != targetIndex) {
+            targetIndex = target.id
+            guidance.reset()
+            updateProgress()
+        }
         val state = guidance.evaluate(value, target, now)
         val info = cameraInfo ?: return
-        val roll = if (abs(target.pitch) > 75) 0.0 else value.roll
-        val phase = if (state.sensorsFresh && state.aligned && state.level && state.still) "hold" else "aim"
-        overlay.update(state.deltaYaw, state.deltaPitch, roll, state.holdProgress, phase, info.horizontalFov, info.verticalFov, value.pitch, value.roll)
+        val roll = if (abs(target.pitch) >= 75) 0.0 else value.roll
+        val holding = state.sensorsFresh && state.aligned && state.level && state.still && (state.captureSafe || state.settling)
+        val phase = if (holding) "hold" else "aim"
+        val sideways = displayRotation % 2 != 0
+        overlay.update(state.deltaYaw, state.deltaPitch, roll, state.holdProgress, phase,
+            if (sideways) info.verticalFov else info.horizontalFov,
+            if (sideways) info.horizontalFov else info.verticalFov, value.pitch, value.roll)
         if (now - lastTextUpdateMs >= 100) {
             lastTextUpdateMs = now
             when {
@@ -410,21 +529,25 @@ class MainActivity : Activity() {
                     statusTitle.text = "Waiting for motion sensors"
                     statusDetail.text = "Hold still for a moment before the next photo."
                 }
-                state.aligned && !state.level -> {
+                holding -> {
+                    statusTitle.text = "Hold here"
+                    statusDetail.text = "Keep the circles together while the ring fills."
+                }
+                state.angularError > 3.0 -> {
+                    statusTitle.text = if (state.angularError <= 6.0) "Almost there" else directionText(state.deltaYaw, state.deltaPitch, target.pitch)
+                    statusDetail.text = "Choose any direction. Bring a light into the center."
+                }
+                abs(wrapDegrees(roll)) > 4.0 -> {
                     statusTitle.text = "Level your phone"
                     statusDetail.text = "Gently rotate it until the small line is level."
                 }
-                state.aligned && !state.still -> {
+                value.angularSpeed > 3.0 -> {
                     statusTitle.text = "You’re in the right spot"
                     statusDetail.text = "Now stop moving. We’ll take it from here."
                 }
-                phase == "hold" -> {
-                    statusTitle.text = "Perfect. Hold still."
-                    statusDetail.text = "Keep the circles together while the ring fills."
-                }
                 else -> {
                     statusTitle.text = directionText(state.deltaYaw, state.deltaPitch, target.pitch)
-                    statusDetail.text = "Bring the light into the center. Keep the lens in one place."
+                    statusDetail.text = "Choose any direction. Bring a light into the center."
                 }
             }
         }
@@ -441,6 +564,7 @@ class MainActivity : Activity() {
         statusDetail.text = "Keep still for one more moment."
         overlay.update(0.0, 0.0, 0.0, 1.0, "capture")
         val generation = sessionGeneration
+        val shutterRotationGeneration = rotationGeneration
         val location = lastLocation?.takeIf { locationEnabled && locationIsFresh(it) }
         io.execute {
             try {
@@ -459,7 +583,7 @@ class MainActivity : Activity() {
                         frame.put("poseTimestampOffsetNs", association.offsetNs ?: org.json.JSONObject.NULL)
                         frame.put("captureRequestPoseTimestampNs", shutterPose.timestampNs)
                         val exposureGate = Guidance().evaluate(association.pose, target, association.pose.timestampNs / 1_000_000L)
-                        val accepted = association.offsetNs == null || (exposureGate.aligned && exposureGate.level && exposureGate.still)
+                        val accepted = shutterRotationGeneration == rotationGeneration && (association.offsetNs == null || exposureGate.captureSafe)
                         frame.put("exposurePoseAccepted", accepted)
                         val associatedMetadata = metadata.copy(cameraMetadataJson = frame.toString())
                         io.execute {
@@ -472,17 +596,17 @@ class MainActivity : Activity() {
                                         return@post
                                     }
                                     completed.add(target.id)
-                                    targetIndex++
                                     busy = false
                                     lastShotMs = metadata.durationMs
                                     savedUntilMs = SystemClock.elapsedRealtime() + 420
                                     guidance.reset()
                                     action.isEnabled = true; finish.isEnabled = true
                                     statusTitle.text = "Got it ✓"
-                                    statusDetail.text = "Original saved. You can move to the next light."
+                                    statusDetail.text = "Original saved. Explore in any direction."
                                     overlay.update(0.0, 0.0, 0.0, 1.0, "saved")
+                                    overlay.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                                     updateProgress()
-                                    if (targetIndex == plan.size || interrupted) finishSession()
+                                    if (completed.size == plan.size || interrupted) finishSession()
                                 }
                             } catch (e: Exception) { main.post { captureFailed("The photo is on disk, but its session record couldn’t be saved. ${e.message}") } }
                         }
@@ -535,12 +659,14 @@ class MainActivity : Activity() {
         val current = session ?: return
         if (endingSession) return
         endingSession = true
+        val generation = sessionGeneration
         paused = true; busy = true
         tracker.stop(); camera.close(); cameraOpening = false
         io.execute {
             try {
                 store.finish(current)
                 main.post {
+                    if (isDestroyed || generation != sessionGeneration) return@post
                     busy = false
                     endingSession = false
                     session = null
@@ -548,6 +674,7 @@ class MainActivity : Activity() {
                     showSaved(completed.size, plan.size)
                 }
             } catch (e: Exception) { main.post {
+                if (isDestroyed || generation != sessionGeneration) return@post
                 busy = false; endingSession = false
                 statusTitle.text = "Your originals are still safe"
                 statusDetail.text = "The session couldn’t be finalized. Try saving again."
@@ -575,7 +702,9 @@ class MainActivity : Activity() {
         content.addView(button("View & export capture", true) { showSessions() }, LinearLayout.LayoutParams(-1, dp(58)))
         content.addView(space(10))
         content.addView(button("Back to start", false) { showHome() }, LinearLayout.LayoutParams(-1, dp(52)))
-        host.addView(content, FrameLayout.LayoutParams(-1, -1))
+        val scroll = ScrollView(this).apply { isFillViewport = true }
+        scroll.addView(content)
+        host.addView(scroll, FrameLayout.LayoutParams(-1, -1))
         installRoot(host)
     }
 
@@ -722,7 +851,7 @@ class MainActivity : Activity() {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val oval = RectF()
         override fun onDraw(canvas: Canvas) {
-            val cx = width * .5f; val cy = height * .48f; val radius = min(width * .25f, height * .36f)
+            val cx = width * .5f; val cy = height * .43f; val radius = min(width * .25f, height * .33f)
             paint.style = Paint.Style.FILL; paint.color = card
             canvas.drawCircle(cx, cy, radius * 1.13f, paint)
             paint.style = Paint.Style.STROKE; paint.strokeWidth = dp(1).toFloat(); paint.color = Color.rgb(76, 115, 91)

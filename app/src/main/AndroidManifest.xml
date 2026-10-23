@@ -14,7 +14,8 @@
         android:theme="@style/Theme.PhotoSphere"
         android:supportsRtl="true">
         <activity android:name=".MainActivity"
-            android:screenOrientation="portrait"
+            android:screenOrientation="fullSensor"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

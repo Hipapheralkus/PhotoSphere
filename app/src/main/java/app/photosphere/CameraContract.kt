@@ -10,7 +10,10 @@ data class CameraInfo(
     val previewWidth: Int,
     val previewHeight: Int,
     val sensorOrientation: Int,
-    /** Field of view in the portrait viewfinder coordinate system, not sensor coordinates. */
+    /**
+     * Fixed portrait-viewfinder field of view, independent of current display rotation.
+     * A landscape viewfinder swaps these axes; sensorOrientation remains the sensor's value.
+     */
     val horizontalFov: Double,
     val verticalFov: Double,
     val maxResolutionMode: Boolean,

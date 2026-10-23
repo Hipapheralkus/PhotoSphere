@@ -6,13 +6,16 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.View
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.math.tan
 
 /**
@@ -47,6 +50,14 @@ class CaptureOverlay @JvmOverloads constructor(
     private var verticalFov = 65.0
     private var cameraPitch = 0.0
     private var cameraRoll = 0.0
+    private var visualRight = 0.0
+    private var visualUp = 0.0
+    private var visualForward = 1.0
+    private var visualRoll = 0.0
+    private var fallbackBearing = 0.0
+    private var lastFilterNs = 0L
+    private var occludedTop = 0f
+    private var occludedBottom = 0f
 
     init {
         isClickable = false
@@ -54,6 +65,19 @@ class CaptureOverlay @JvmOverloads constructor(
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
         contentDescription = "Capture paused."
         setWillNotDraw(false)
+    }
+
+    /**
+     * Distances obscured inward from this overlay's top/bottom edges, in native pixels.
+     * The optical center never moves: only the target/edge arrow and level avoid controls.
+     */
+    fun setOcclusionInsets(top: Float, bottom: Float) {
+        val newTop = if (top.isFinite()) top.coerceAtLeast(0f) else 0f
+        val newBottom = if (bottom.isFinite()) bottom.coerceAtLeast(0f) else 0f
+        if (newTop == occludedTop && newBottom == occludedBottom) return
+        occludedTop = newTop
+        occludedBottom = newBottom
+        postInvalidateOnAnimation()
     }
 
     fun update(
@@ -75,6 +99,10 @@ class CaptureOverlay @JvmOverloads constructor(
         this.verticalFov = if (verticalFov.isFinite()) verticalFov.coerceIn(15.0, 150.0) else 65.0
         this.cameraPitch = if (cameraPitch.isFinite()) cameraPitch.coerceIn(-90.0, 90.0) else 0.0
         this.cameraRoll = if (cameraRoll.isFinite()) wrapDegrees(cameraRoll) else 0.0
+        if (phase == "paused" || phase == "saved") {
+            // A new target/session should not inherit the previous target's visual trail.
+            lastFilterNs = 0L
+        } else updateVisualDirection()
         if (this.phase != phase) {
             this.phase = phase
             // Sensor updates can arrive at 60 Hz. Accessibility text changes only at transitions.
@@ -145,10 +173,19 @@ class CaptureOverlay @JvmOverloads constructor(
             drawTarget(canvas, cx, cy)
         }
 
-        drawLevel(canvas, cx, min(height - dp(32f), cy + dp(97f)))
+        // Prefer below the reticle. If a control panel covers it, use the space above.
+        val levelTop = occludedTop + dp(21f)
+        val levelBottom = height - occludedBottom - dp(21f)
+        val below = min(cy + dp(89f), levelBottom)
+        val above = max(cy - dp(89f), levelTop)
+        when {
+            below >= cy + dp(58f) && below in levelTop..levelBottom -> drawLevel(canvas, cx, below)
+            above <= cy - dp(58f) && above in levelTop..levelBottom -> drawLevel(canvas, cx, above)
+        }
     }
 
-    private fun drawTarget(canvas: Canvas, cx: Float, cy: Float) {
+    /** 80 ms visual smoothing; the capture controller always receives unfiltered sensor input. */
+    private fun updateVisualDirection() {
         val radians = Math.PI / 180.0
         val yawRadians = yaw * radians
         val cameraPitchRadians = cameraPitch * radians
@@ -163,35 +200,83 @@ class CaptureOverlay @JvmOverloads constructor(
             cos(cameraPitchRadians) * cos(targetPitchRadians) * cos(yawRadians)
         val screenRight = right * cos(rollRadians) - up * sin(rollRadians)
         val screenUp = right * sin(rollRadians) + up * cos(rollRadians)
+        val nowNs = SystemClock.elapsedRealtimeNanos()
+        val elapsedNs = nowNs - lastFilterNs
+        val reset = lastFilterNs == 0L || elapsedNs <= 0L || elapsedNs > 250_000_000L
+        if (reset) {
+            visualRight = screenRight
+            visualUp = screenUp
+            visualForward = z
+            visualRoll = roll
+        } else {
+            val blend = 1.0 - exp(-elapsedNs.toDouble() / 80_000_000.0)
+            val nextRight = visualRight + blend * (screenRight - visualRight)
+            val nextUp = visualUp + blend * (screenUp - visualUp)
+            val nextForward = visualForward + blend * (z - visualForward)
+            val length = sqrt(nextRight * nextRight + nextUp * nextUp + nextForward * nextForward)
+            if (length > 0.00001) {
+                visualRight = nextRight / length
+                visualUp = nextUp / length
+                visualForward = nextForward / length
+            } else {
+                visualRight = screenRight
+                visualUp = screenUp
+                visualForward = z
+            }
+            visualRoll = wrapDegrees(visualRoll + blend * wrapDegrees(roll - visualRoll))
+        }
+        lastFilterNs = nowNs
+        // The projected unit vector is continuous across +/-180 yaw and at the poles.
+        // At the exact antipode its screen bearing is undefined, so retain the last cue.
+        if (visualRight * visualRight + visualUp * visualUp > 0.0001) {
+            fallbackBearing = kotlin.math.atan2(-visualUp, visualRight)
+        } else if (reset && visualForward < 0.0 && abs(yaw) + abs(pitch) > 1.0) {
+            val angularX = yaw / horizontalFov
+            val angularY = -pitch / verticalFov
+            fallbackBearing = kotlin.math.atan2(
+                -angularX * sin(rollRadians) + angularY * cos(rollRadians),
+                angularX * cos(rollRadians) + angularY * sin(rollRadians),
+            )
+        }
+    }
+
+    private fun drawTarget(canvas: Canvas, cx: Float, cy: Float) {
+        val radians = Math.PI / 180.0
         val fx = width * 0.5 / tan(horizontalFov * radians * 0.5)
         val fy = height * 0.5 / tan(verticalFov * radians * 0.5)
-        var dx: Float
-        var dy: Float
-        if (z > 0.05) {
-            dx = (fx * screenRight / z).toFloat()
-            dy = (-fy * screenUp / z).toFloat()
+        val dx: Float
+        val dy: Float
+        if (visualForward > 0.05) {
+            dx = (fx * visualRight / visualForward).toFloat()
+            dy = (-fy * visualUp / visualForward).toFloat()
         } else {
-            // A target behind the camera still points along the shortest angular direction.
-            val angularX = yaw / horizontalFov * width
-            val angularY = -pitch / verticalFov * height
-            dx = (angularX * cos(rollRadians) + angularY * sin(rollRadians)).toFloat()
-            dy = (-angularX * sin(rollRadians) + angularY * cos(rollRadians)).toFloat()
+            dx = (cos(fallbackBearing) * width).toFloat()
+            dy = (sin(fallbackBearing) * height).toFloat()
         }
-        val inset = dp(43f)
-        val availableX = max(dp(1f), cx - inset)
-        val availableY = max(dp(1f), cy - inset)
-        val overflow = max(abs(dx) / availableX, abs(dy) / availableY)
-        val offscreen = overflow > 1f || z <= 0.05
+        val inset = dp(33f)
+        val safeLeft = inset
+        val safeRight = width - inset
+        val safeTop = max(inset, occludedTop + inset)
+        val safeBottom = min(height - inset, height - occludedBottom - inset)
+        if (safeLeft >= safeRight || safeTop >= safeBottom) return
+        val tx = cx + dx
+        val ty = cy + dy
+        val offscreen = tx !in safeLeft..safeRight || ty !in safeTop..safeBottom || visualForward <= 0.05
         if (offscreen) {
-            val divisor = max(1f, overflow)
-            dx /= divisor
-            dy /= divisor
-            drawEdgeArrow(canvas, cx + dx, cy + dy, dx, dy)
+            // Preserve the direction of travel while bringing the cue to an unobscured edge.
+            var edgeScale = Float.POSITIVE_INFINITY
+            if (dx > 0f) edgeScale = min(edgeScale, (safeRight - cx) / dx)
+            else if (dx < 0f) edgeScale = min(edgeScale, (safeLeft - cx) / dx)
+            if (dy > 0f) edgeScale = min(edgeScale, (safeBottom - cy) / dy)
+            else if (dy < 0f) edgeScale = min(edgeScale, (safeTop - cy) / dy)
+            if (!edgeScale.isFinite()) return
+            edgeScale = edgeScale.coerceAtLeast(0f)
+            val edgeX = (cx + dx * edgeScale).coerceIn(safeLeft, safeRight)
+            val edgeY = (cy + dy * edgeScale).coerceIn(safeTop, safeBottom)
+            drawEdgeArrow(canvas, edgeX, edgeY, dx, dy)
             return
         }
 
-        val tx = cx + dx
-        val ty = cy + dy
         val targetRadius = dp(21f)
         fill(Color.argb(26, 184, 243, 211))
         canvas.drawCircle(tx, ty, targetRadius, paint)
@@ -232,9 +317,9 @@ class CaptureOverlay @JvmOverloads constructor(
         canvas.drawLine(cx - halfWidth, cy, cx + halfWidth, cy, paint)
         canvas.drawLine(cx - halfWidth, cy - dp(4f), cx - halfWidth, cy + dp(4f), paint)
         canvas.drawLine(cx + halfWidth, cy - dp(4f), cx + halfWidth, cy + dp(4f), paint)
-        val levelColor = if (abs(roll) <= 3.0) mint else amber
+        val levelColor = if (phase == "hold" || phase == "capture" || abs(visualRoll) <= 4.0) mint else amber
         canvas.save()
-        canvas.rotate(roll.coerceIn(-35.0, 35.0).toFloat(), cx, cy)
+        canvas.rotate(visualRoll.coerceIn(-35.0, 35.0).toFloat(), cx, cy)
         stroke(levelColor, 2.5f)
         canvas.drawLine(cx - dp(18f), cy, cx + dp(18f), cy, paint)
         fill(levelColor)

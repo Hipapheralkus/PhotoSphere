@@ -7,9 +7,10 @@ android {
         applicationId = "app.photosphere"
         minSdk = 30
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
-        testInstrumentationRunner = "app.photosphere.DeviceSmokeInstrumentation"
+        versionCode = 2
+        versionName = "0.1.1"
+        testInstrumentationRunner = providers.gradleProperty("testRunner")
+            .orElse("app.photosphere.DeviceSmokeInstrumentation").get()
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

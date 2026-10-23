@@ -16,6 +16,8 @@ class OrientationTracker(context: Context, private val onPose: (Pose) -> Unit) :
         ?: sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
     private val gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
     private val matrix = FloatArray(9)
+    private val angles = DoubleArray(3)
+    private var displayRotation = 0
     private var running = false
     private var yawAnchor: Double? = null
     private var latestAbsoluteYaw: Double? = null
@@ -42,6 +44,12 @@ class OrientationTracker(context: Context, private val onPose: (Pose) -> Unit) :
     /** A new capture session needs a new anchor. An unfinished session cannot resume across restarts. */
     fun resetYawAnchor() { yawAnchor = latestAbsoluteYaw }
 
+    /** Surface.ROTATION_* constant. Reorient the level guide without changing the sphere anchor. */
+    fun setDisplayRotation(rotation: Int) {
+        require(rotation in 0..3)
+        displayRotation = rotation
+    }
+
     override fun onSensorChanged(event: SensorEvent) {
         if (!running) return
         if (event.sensor.type == Sensor.TYPE_GYROSCOPE) {
@@ -56,13 +64,13 @@ class OrientationTracker(context: Context, private val onPose: (Pose) -> Unit) :
         SensorManager.getRotationMatrixFromVector(matrix, event.values)
         // Android device axes: +X right, +Y top of portrait screen, +Z toward viewer.
         // The rear camera looks along -Z. The rotation matrix maps these axes to world.
-        val angles = OrientationMath.fromRotationMatrix(matrix)
-        val absoluteYaw = angles.yaw
+        OrientationMath.writeRotationMatrix(matrix, displayRotation, angles)
+        val absoluteYaw = angles[0]
         latestAbsoluteYaw = absoluteYaw
         if (yawAnchor == null) yawAnchor = absoluteYaw
         val gyroAgeNs = event.timestamp - gyroTimestampNs
         val speed = if (gyroTimestampNs > 0 && gyroAgeNs in -50_000_000L..250_000_000L) gyroSpeed else Double.POSITIVE_INFINITY
-        onPose(Pose(wrapDegrees(absoluteYaw - yawAnchor!!), angles.pitch, angles.roll, speed, event.timestamp, event.values.copyOf()))
+        onPose(Pose(wrapDegrees(absoluteYaw - yawAnchor!!), angles[1], angles[2], speed, event.timestamp, event.values.copyOf()))
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
