@@ -74,6 +74,9 @@ class MainActivity : Activity() {
     private var displayRotation = Surface.ROTATION_0
     private var rotationGeneration = 0
     private var shellRoot: View? = null
+    private val stitchObservers = mutableListOf<AutoCloseable>()
+    private var savedSessionId: String? = null
+    private var pendingStitch: Pair<String, StitchQuality>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,7 +89,13 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33) {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT) { goBack() }
         }
-        showHome()
+        if (intent.hasExtra("stitchSessionId")) showSessions() else showHome()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.hasExtra("stitchSessionId") && screen != "capture") showSessions()
     }
 
     override fun onResume() {
@@ -142,6 +151,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        stitchObservers.forEach { it.close() }
+        stitchObservers.clear()
         sessionGeneration++
         tracker.stop()
         camera.close()
@@ -161,6 +172,8 @@ class MainActivity : Activity() {
     }
 
     private fun installRoot(view: View) {
+        stitchObservers.forEach { it.close() }
+        stitchObservers.clear()
         shellRoot = view
         view.setOnApplyWindowInsetsListener { v, insets ->
             val safe = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
@@ -226,9 +239,9 @@ class MainActivity : Activity() {
         choices.addView(space(10))
         choices.addView(button("Your captures", false) { showSessions() }, LinearLayout.LayoutParams(-1, dp(if (landscape) 48 else 52)))
         choices.addView(space(18))
-        choices.addView(text("CAPTURE PROTOTYPE", 10, mint, true).apply { letterSpacing = .16f; gravity = Gravity.CENTER })
+        choices.addView(text("ALL ON YOUR PHONE", 10, mint, true).apply { letterSpacing = .16f; gravity = Gravity.CENTER })
         choices.addView(space(7))
-        choices.addView(text("Originals saved for stitching. Sphere assembly comes next.", 12, muted).apply { gravity = Gravity.CENTER })
+        choices.addView(text("Capture. Create your sphere. Look around.", 12, muted).apply { gravity = Gravity.CENTER })
         body.addView(space(12))
         installRoot(host)
     }
@@ -269,6 +282,9 @@ class MainActivity : Activity() {
             locationEnabled = hasLocationPermission()
             getPreferences(0).edit().putBoolean("location", locationEnabled).apply()
             showHome()
+        } else if (requestCode == 22) {
+            pendingStitch?.let { (id, quality) -> launchStitch(id, quality) }
+            pendingStitch = null
         }
     }
 
@@ -669,6 +685,7 @@ class MainActivity : Activity() {
                     if (isDestroyed || generation != sessionGeneration) return@post
                     busy = false
                     endingSession = false
+                    savedSessionId = current.id
                     session = null
                     sessionGeneration++
                     showSaved(completed.size, plan.size)
@@ -697,9 +714,12 @@ class MainActivity : Activity() {
         content.addView(space(14))
         content.addView(text("$count full-resolution originals\n${if (count == total) "All planned directions captured." else "$count of $total directions captured."}", 17, muted).apply { gravity = Gravity.CENTER; setLineSpacing(dp(6).toFloat(), 1f) })
         content.addView(space(24))
-        content.addView(text(if (interrupted) "Capture was interrupted, so we saved your originals. Start a new sphere to keep its alignment accurate." else "Export your originals for stitching. This prototype doesn’t assemble the sphere yet.", 15, muted).apply { gravity = Gravity.CENTER })
+        content.addView(text(if (interrupted) "Capture was interrupted, so we saved your originals. You can create a partial view or start a new sphere." else "Create an interactive Photo Sphere from your originals. Your photos stay safe on this phone.", 15, muted).apply { gravity = Gravity.CENTER })
         content.addView(space(34))
-        content.addView(button("View & export capture", true) { showSessions() }, LinearLayout.LayoutParams(-1, dp(58)))
+        content.addView(button(if (count >= 2) "Create your sphere" else "Your captures", true) {
+            val id = savedSessionId
+            if (count >= 2 && id != null) requestStitch(id) else showSessions()
+        }, LinearLayout.LayoutParams(-1, dp(58)))
         content.addView(space(10))
         content.addView(button("Back to start", false) { showHome() }, LinearLayout.LayoutParams(-1, dp(52)))
         val scroll = ScrollView(this).apply { isFillViewport = true }
@@ -718,16 +738,16 @@ class MainActivity : Activity() {
         content.addView(space(22))
         content.addView(text("Your captures", 34, white, true))
         content.addView(space(10))
-        content.addView(text("Full-resolution originals. Ready for what comes next.", 16, muted))
+        content.addView(text("Make a sphere. Step back into the moment.", 16, muted))
         content.addView(space(24))
         val loading = text("Finding your photos…", 16, muted)
         content.addView(loading)
         installRoot(host)
         io.execute {
             try {
-                val entries = store.listSessions()
+                val entries = store.listSessions().map { it to runCatching { StitchRepository.result(this, it.id) }.getOrNull() }
                 main.post {
-                    if (screen != "sessions") return@post
+                    if (screen != "sessions" || shellRoot !== host || isDestroyed) return@post
                     content.removeView(loading)
                     if (entries.isEmpty()) {
                         content.addView(OrbitIllustration(this), LinearLayout.LayoutParams(-1, dp(210)))
@@ -735,7 +755,7 @@ class MainActivity : Activity() {
                         content.addView(space(18))
                         content.addView(button("Start a sphere", true) { startRequested() }, LinearLayout.LayoutParams(-1, dp(58)))
                     }
-                    entries.forEach { summary ->
+                    entries.forEach { (summary, result) ->
                         val item = column(20).apply { background = rounded(card, 22) }
                         item.addView(text(SimpleDateFormat("EEE, d MMM · HH:mm", Locale.getDefault()).format(Date(summary.createdAtMs)), 19, white, true))
                         item.addView(space(9))
@@ -743,13 +763,119 @@ class MainActivity : Activity() {
                         item.addView(space(7))
                         item.addView(text(if (summary.capturedCount == summary.targetCount && summary.targetCount > 0) "All planned directions captured" else "Partial capture · originals preserved", 13, muted))
                         item.addView(space(16))
-                        item.addView(button("Export originals", true) { requestExport(summary) }, LinearLayout.LayoutParams(-1, dp(50)))
+                        addSphereActions(item, summary, result)
+                        item.addView(space(10))
+                        item.addView(button("Export originals", false) { requestExport(summary) }, LinearLayout.LayoutParams(-1, dp(48)))
                         content.addView(item, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
                     }
                     content.addView(text("Export before uninstalling. ZIP files contain original photos and any location you enabled.", 13, muted))
                 }
             } catch (e: Exception) { main.post { loading.text = "Couldn’t read captures: ${e.message}" } }
         }
+    }
+
+    private fun addSphereActions(item: LinearLayout, summary: SessionSummary, initialResult: PanoramaResult?) {
+        var available = initialResult
+        val info = text("", 13, muted)
+        val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100; visibility = View.GONE
+            progressTintList = android.content.res.ColorStateList.valueOf(mint)
+        }
+        val view = button("View sphere", true) { openSphere(summary.id) }
+        val generate = button(if (available == null) "Create Photo Sphere" else "Create again", available == null) { requestStitch(summary.id) }
+        val cancel = button("Cancel generation", false) { StitchRepository.cancel(this, summary.id) }.apply { visibility = View.GONE }
+        fun render(state: StitchJobState?) {
+            if (state?.result != null) available = state.result
+            val active = state?.isActive == true
+            view.visibility = if (available != null) View.VISIBLE else View.GONE
+            generate.visibility = if (active) View.GONE else View.VISIBLE
+            generate.isEnabled = summary.capturedCount >= 2
+            generate.text = if (available == null) "Create Photo Sphere" else "Create again"
+            cancel.visibility = if (active) View.VISIBLE else View.GONE
+            cancel.isEnabled = state?.status != StitchStatus.CANCELLING
+            progress.visibility = if (active) View.VISIBLE else View.GONE
+            progress.progress = state?.progress ?: 0
+            progress.isIndeterminate = active && (state?.progress ?: 0) == 0
+            info.text = when {
+                active -> "${state?.message ?: "Preparing your sphere"} · ${state?.progress ?: 0}%"
+                state?.status in setOf(StitchStatus.FAILED, StitchStatus.INTERRUPTED, StitchStatus.CANCELLED) -> state?.message
+                available != null -> available!!.let { result ->
+                    "${result.width} × ${result.height} · ${String.format(Locale.US, "%.0f", result.width.toLong() * result.height / 1_000_000.0)} MP" +
+                        if (result.coverageFraction < .995) "\nPartial view · uncaptured areas stay blank" else "\nReady to look around"
+                }
+                summary.capturedCount == 0 -> "Capture some photos to create a sphere."
+                summary.capturedCount == 1 -> "At least two overlapping photos are needed to create a sphere."
+                summary.capturedCount < summary.targetCount -> "Create a partial view. Missing directions will stay blank."
+                else -> "Your originals are ready to become a 360° sphere."
+            }
+        }
+        item.addView(info)
+        item.addView(progress, LinearLayout.LayoutParams(-1, dp(12)).apply { topMargin = dp(10) })
+        item.addView(view, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(12) })
+        item.addView(generate, LinearLayout.LayoutParams(-1, dp(50)).apply { topMargin = dp(10) })
+        item.addView(cancel, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(10) })
+        render(null)
+        item.post {
+            if (screen == "sessions" && item.isAttachedToWindow && !isDestroyed) {
+                stitchObservers += StitchRepository.observe(this, summary.id) { state ->
+                    if (screen == "sessions" && item.isAttachedToWindow && !isDestroyed) render(state)
+                }
+            }
+        }
+    }
+
+    private fun openSphere(id: String) {
+        startActivity(Intent(this, PanoramaViewerActivity::class.java).putExtra(PanoramaViewerActivity.SESSION_ID, id))
+    }
+
+    private fun requestStitch(id: String) {
+        val loading = AlertDialog.Builder(this).setTitle("Preparing your sphere")
+            .setMessage("Checking your original photos…").create()
+        loading.show()
+        io.execute {
+            try {
+                val plan = StitchRepository.plan(this, id)
+                main.post {
+                    if (isDestroyed || isFinishing || !loading.isShowing) return@post
+                    loading.dismiss()
+                    var choice = StitchQuality.FULL
+                    fun label(name: String, width: Int) = "$name · ${width} × ${width / 2}\n${String.format(Locale.US, "%.0f", width.toLong() * width / 2_000_000.0)} megapixels"
+                    val note = "Creates a Photo Sphere on this phone. Your originals stay safe, and saved GPS is kept." +
+                        if (!plan.completePlanned) "\n\nThis capture has ${plan.sourceCount} of ${plan.targetCount} directions. Uncaptured areas will stay blank." else ""
+                    val options = column(20)
+                    options.addView(text(note, 15, muted))
+                    options.addView(space(18))
+                    val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+                    val choices = mutableListOf(StitchQuality.FULL to label("Full detail", plan.widthFull))
+                    if (plan.widthQuick < plan.widthFull) choices += StitchQuality.QUICK to label("Quicker", plan.widthQuick)
+                    choices.forEach { (quality, title) ->
+                        group.addView(RadioButton(this).apply {
+                            this.id = View.generateViewId(); text = title; setTextColor(white); textSize = 16f
+                            buttonTintList = android.content.res.ColorStateList.valueOf(mint)
+                            setPadding(0, dp(10), 0, dp(10))
+                            setOnCheckedChangeListener { _, checked -> if (checked) choice = quality }
+                        }, LinearLayout.LayoutParams(-1, -2))
+                    }
+                    group.check(group.getChildAt(0).id); options.addView(group)
+                    val scroll = ScrollView(this).apply { addView(options) }
+                    AlertDialog.Builder(this).setTitle("Create your sphere").setView(scroll)
+                        .setPositiveButton("Create") { _, _ ->
+                            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED && !getPreferences(0).getBoolean("notificationAsked", false)) {
+                                pendingStitch = id to choice
+                                getPreferences(0).edit().putBoolean("notificationAsked", true).apply()
+                                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 22)
+                            } else launchStitch(id, choice)
+                        }.setNegativeButton("Later", null).show()
+                }
+            } catch (error: Exception) { main.post {
+                if (!isDestroyed && !isFinishing && loading.isShowing) { loading.dismiss(); showError("Couldn’t prepare this capture", error) }
+            } }
+        }
+    }
+
+    private fun launchStitch(id: String, quality: StitchQuality) {
+        if (!StitchRepository.start(this, id, quality)) toast("A sphere is already being created. You can follow its progress here.")
+        showSessions()
     }
 
     private fun requestExport(summary: SessionSummary) {

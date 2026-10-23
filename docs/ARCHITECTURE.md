@@ -1,8 +1,8 @@
-# Capture architecture
+# Capture, stitching and viewing architecture
 
-This repository currently implements a native Android **source-capture prototype**. It guides capture in any direction around the whole sphere, captures camera-produced JPEGs, records the session durably, and exports the originals. It does not yet assemble or display a stitched Photo Sphere. The first hardware target is Pixel 10 Pro XL running Android 17; actual device results belong in [VALIDATION.md](VALIDATION.md).
+The native Android prototype guides capture in any direction around the whole sphere, preserves camera-produced JPEGs, stitches them on the phone, and displays/exports the resulting Photo Sphere. The first hardware target is Pixel 10 Pro XL running Android 17; actual device results belong in [VALIDATION.md](VALIDATION.md).
 
-The application uses Kotlin and the Android platform APIs, with no third-party runtime dependencies. Camera2 was chosen because the project needs explicit stream configurations, capture metadata, and control over higher-resolution sensor modes.
+The application uses Kotlin, Camera2, an OpenCV 4.13.0 C++ pipeline, AndroidX ExifInterface 1.4.2 and a GLES sphere viewer. Camera2 provides explicit stream configurations, capture metadata and control over advertised higher-resolution sensor modes.
 
 ## Components and execution
 
@@ -15,6 +15,10 @@ The application uses Kotlin and the Android platform APIs, with no third-party r
 | `CaptureOverlay`, `SphereMapView` | Projected target, roll guide, progress and coverage diagram | Canvas drawing on the UI thread |
 | `CameraEngine` | Camera selection, preview, full JPEG capture, timestamp pairing | Camera handler thread; separate JPEG file executor |
 | `SessionStore` | Atomic manifest commits, recovery inventory, streaming export | Application IO executor |
+| `StitchRepository`, `StitchSizing` | Validate accepted originals, choose output dimensions, persist job state and result pointer | IO worker; observer callbacks on main |
+| `StitchService`, `NativeStitcher` | Foreground job, cancellation, visual registration and original-resolution composition | Dedicated worker; bounded native parallelism |
+| `PanoramaMetadata` | GPano XMP and optional EXIF GPS without pixel recompression | Stitch worker |
+| `PanoramaViewerActivity`, `SphereViewerView` | Interactive preview and master JPEG export | GLES render thread, background decoding/export |
 
 The live preview and saved photographs are separate streams. Preview dimensions are capped at 1920 × 1080 or a smaller supported size with a suitable aspect ratio. A fit-centre transform preserves the full frame without stretching. The overlay uses the corresponding frame bounds so its pinhole projection does not include the letterbox bars. Camera readiness requires both capture-result metadata and a presented TextureView frame.
 
@@ -93,4 +97,29 @@ ZIP export streams originals with a 64 KiB copy buffer. Compression level zero a
 
 `GuidanceTest` exercises spherical coverage with mixed image orientations, free target selection and boundary hysteresis, pole/wrap geometry, all four display rotations, brief jitter versus strict shutter safety, sustained departures, repeated-shot latching, stale/repeated samples, invalid values, and clock/delivery gaps. `PoseHistoryTest` checks exposure association and trigger-pose fallbacks. `DeviceSmokeInstrumentation` is a separate explicitly invoked test runner that opens both quality modes, captures originals, checks JPEG dimensions/timestamps, commits temporary sessions, and verifies byte-identical ZIP payloads with SHA-256.
 
-Those checks do not establish stitching quality, translation accuracy, sustained frame rate, or thermal performance. Use the actual results in [VALIDATION.md](VALIDATION.md) and the next-stage criteria in [GUIDANCE_AND_STITCHING.md](GUIDANCE_AND_STITCHING.md).
+`StitchSmokeInstrumentation` imports generated images with known geometry, mixed display/EXIF rotations and synthetic GPS. It checks the public generation flow, actual output against a ground-truth sphere, metadata, byte preservation and cancellation. This synthetic scene contains pure rotation; it does not validate real camera translation or moving objects. Use actual results in [VALIDATION.md](VALIDATION.md).
+
+## Stitch input and output
+
+Only accepted photos with manifest poses enter generation. The latest valid accepted record for each target is selected. Paths must resolve inside the session originals directory; JPEG boundaries, byte counts, dimensions and finite poses are checked. Orphaned or rejected photos remain recoverable/exportable but are not silently assigned an invented pose. EXIF orientation normalizes decoded images, and capture-time display rotation swaps the recorded field-of-view axes for landscape shots. Legacy portrait manifests without this field remain supported.
+
+The native pipeline extracts SIFT features at working resolution, considers overlap candidates by spherical direction (including closing-seam and cross-row neighbours), verifies a relative rotation from matched rays, and refines the rotation graph with weak sensor priors. Connected components retain an orientation anchor; unconnected sources/components are explicitly reported. It applies scalar exposure correction and feather blending. Intrinsics are fixed estimates from captured fields of view; this baseline does not yet optimize lens distortion, select content-aware seams or repair depth-dependent parallax.
+
+Composition reads one full-resolution original at a time into a full 2:1 RGB canvas and a uint16 weight plane. It does not compose from feature thumbnails. The source sampling bound uses the smaller focal sampling axis, converted to pixels per full turn. Full detail is bounded by that estimate, the native memory budget and width 20,480; Quicker also caps width at 8,192. Widths are rounded down to multiples of 256. This is a sampling bound, not measured optical resolving power. The native budget is at most 1,200 MiB and one quarter of currently available system RAM. The sizing reserve includes the largest decoded original and 128 MiB of working space, in addition to five bytes per output pixel. Low memory reduces resolution or produces an explicit error.
+
+The full canvas always spans 360° × 180°. Missing footprints remain neutral gray; estimated coverage is weighted by solid angle and is separate from captured target count. The master is JPEG quality 97 with 4:4:4 chroma sampling. A bounded quality-90 preview is generated for interactive viewing. The master gets GPano equirectangular/full-canvas metadata, source count, capture time and optional saved EXIF GPS. Relative yaw does not establish true north, so no absolute heading is fabricated. Metadata updates do not recompress the JPEG scan data.
+
+```text
+files/sessions/<session-id>/
+  stitch-state.json
+  stitch-work/<job-id>/                 # unpublished current work
+  stitch-results/<completed-job-id>/
+    panorama.jpg
+    panorama-preview.jpg
+    details.json
+  panorama.json                         # atomic pointer to the published result
+```
+
+A `dataSync` foreground service owns one generation job at a time. Disk and native work never run on the UI thread. Progress notifications and observers are throttled, cancellation is cooperative, and the service has bounded wake-lock/time-out handling. Originals are never deleted. A completed result is published only after JPEG dimensions, report, metadata and files validate. The atomic result pointer is the commit point; failure/cancellation leaves the previous published sphere usable. A process restart labels unfinished work interrupted; users can regenerate from originals. Completed immutable result folders can retain older generations; automatic storage reclamation is not yet implemented.
+
+The viewer decodes the smaller preview, bounds its texture to available GL limits and renders on demand. Drag/pinch adjusts the spherical camera; double tap resets it. The UI clearly labels preview size separately from master detail. Export streams the master through the system document picker without reducing its dimensions. The original ZIP remains an independent export and does not substitute the flattened panorama for source files.

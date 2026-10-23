@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(photosphere_stitch LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(OpenCV REQUIRED CONFIG)
+
+add_library(photosphere_stitch SHARED photosphere_stitch.cpp)
+target_compile_options(photosphere_stitch PRIVATE -O3 -Wall -Wextra)
+if(TARGET OpenCV::opencv_java4)
+    target_link_libraries(photosphere_stitch PRIVATE OpenCV::opencv_java4)
+elseif(TARGET opencv_java4)
+    target_link_libraries(photosphere_stitch PRIVATE opencv_java4)
+else()
+    target_include_directories(photosphere_stitch PRIVATE ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(photosphere_stitch PRIVATE ${OpenCV_LIBS})
+endif()

@@ -4,7 +4,7 @@
 
 Built with JDK 21, Gradle 9.4.1, Android Gradle Plugin 9.2.1 and Android SDK 37.0. The app targets Android 17 and requires Android 11 or newer.
 
-`assembleDebug`, `assembleDebugAndroidTest`, `testDebugUnitTest` and `lintDebug` pass. There are 20 passing JVM tests: 17 guidance/orientation/coverage tests and 3 exposure-pose association tests. These include brief jitter, sustained movement, strict shutter checks, all four display rotations, arbitrary target order, and geometric coverage with mixed portrait/landscape photographs. Lint has no errors; warnings remain for prototype localization/layout direction, SDK/API usage, backup configuration and tooling versions.
+`assembleDebug`, `assembleDebugAndroidTest`, `assembleRelease`, `testDebugUnitTest` and `lintDebug` pass. There are 40 passing JVM tests: 17 guidance/orientation/coverage, 3 exposure-pose association, 6 stitch sizing, 3 input selection, 7 lifecycle/publication, and 4 spherical metadata tests. Lint has no errors; warnings remain for prototype localization/layout direction, SDK/API usage, backup configuration and tooling versions. Native builds use NDK 28.2.13676358, CMake 3.22.1, OpenCV 4.13.0 and both arm64-v8a/x86_64 ABIs.
 
 ## Physical Pixel 10 Pro XL, Android 17
 
@@ -46,6 +46,39 @@ adb shell am instrument -w app.photosphere.test/app.photosphere.RotationSmokeIns
 
 Its screenshots and JSON report are stored in app cache under `rotation-validation/<runId>/`. Reset any emulator window-manager rotation overrides first. Building without the `testRunner` property selects the original physical-camera runner again.
 
+## Stitching and viewing — version 0.2.0
+
+The Android 16.1 emulator ran the ordinary foreground service and sphere viewer against 48 deterministic synthetic originals. The fixture covers the whole sphere and mixes portrait, both landscape display rotations, EXIF orientations 1/3/6, nonzero roll (including pole views), and slightly inaccurate sensor yaw/pitch. Synthetic GPS is explicitly labelled; no private photographs are included in the test fixture.
+
+The final run visually matched all 48 photos into one connected graph, with 210 verified overlap pairs, 100% rendered footprint coverage and approximately 0.049° mean visual residual. Its 3328 × 1664 memory-limited output had mean absolute RGB error 2.68/255 against the known sphere at 1024 × 512, excluding three rows at each pole. The automated threshold is 15/255. The complete test, including import, generation, metadata checks, partial coverage, cancellation and viewer gestures, took about 15 seconds; this is an emulator functional run with 0.79 MP inputs, not a Pixel speed measurement or full-resolution thermal benchmark. Output size and timings vary with available memory.
+
+The device test verifies:
+
+- 2:1 encoded JPEG dimensions, GPano namespace/fields/source count and synthetic GPS/altitude.
+- No invented compass heading, and removal of stale GPS when location is absent.
+- Original JPEG SHA-256 hashes remain unchanged; metadata edits preserve the encoded JPEG scan.
+- Cancelling a replacement retains the previous published job and identical master bytes.
+- Four source views produce about 22.8% photographed coverage with neutral missing directions; cancellation after native encoding removes only its unpublished outputs.
+- Large malformed native JSON returns an error without crashing, and a pre-existing output file is preserved.
+- The ordinary viewer renders actual scene pixels, supports drag/pinch/reset, and retains direction and zoom when rotating to landscape. Portrait/landscape screenshots were inspected.
+
+The ordinary **Create** dialog and session controls were also exercised outside instrumentation. Generation completed after notification permission was declined. **View sphere → Export JPEG → Save** used Android's Downloads document picker; the exported 3,188,639-byte JPEG matched the published master byte for byte. These files contain only synthetic test imagery/location.
+
+This controlled scene assumes a fixed projection centre. It does not establish handheld scene alignment, parallax correction, moving-subject quality, full-size Pixel processing speed, or third-party gallery compatibility. The Pixel disconnected during implementation, so the stitching update has not yet been installed or exercised on its saved originals. The previously inspected real capture has four of 48 planned directions; it can only form a partial sphere.
+
+To reproduce (fixture generation needs Python, Pillow and NumPy):
+
+```powershell
+python scripts/generate_stitch_fixture.py artifacts/device/stitch-fixture.zip
+.\gradlew.bat assembleDebug assembleDebugAndroidTest '-PtestRunner=app.photosphere.StitchSmokeInstrumentation'
+adb install -r app\build\outputs\apk\debug\app-debug.apk
+adb install -r app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk
+adb push artifacts/device/stitch-fixture.zip /data/local/tmp/photosphere-stitch-fixture.zip
+adb shell am instrument -w -e fixture /data/local/tmp/photosphere-stitch-fixture.zip app.photosphere.test/app.photosphere.StitchSmokeInstrumentation
+```
+
+Reports and screenshots stay under app cache `stitch-validation/<runId>/`. The test retains an explicitly marked synthetic capture. It never deletes or replaces a user's original capture. An additional explicitly selected `ExistingCaptureStitchInstrumentation` runner accepts `-e session <id> -e quality FULL` to test ordinary generation from an existing saved capture without taking photographs. Its report includes GPS verification booleans, not coordinates. The runner is absent from the normal APK.
+
 ## Hosted CI
 
 The workflow is configured, but the first GitHub Actions job was refused before any runner or build step started. GitHub's annotation reports an account payment or spending-limit issue. Local build results above are independent of hosted CI; account billing settings were not changed.
@@ -57,7 +90,7 @@ The workflow is configured, but the first GitHub Actions job was refused before 
 - Optional GPS permission and a fresh physical location fix.
 - Tracking and shutter speed over a longer handheld session, thermal behavior and battery use.
 - Actual positional tracking with ARCore and shared-camera resolution combinations; not implemented in this milestone.
-- Stitching quality and viewer compatibility after a stitcher is implemented.
+- Real-scene stitching quality, large full-detail output on Pixel, repeated-generation memory/thermal behavior, and external Android viewer compatibility.
 
 Physical test photographs, raw device diagnostics and screenshots stay local and are excluded from Git. The reference panorama is also excluded.
 

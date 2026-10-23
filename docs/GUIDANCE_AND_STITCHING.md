@@ -1,6 +1,16 @@
 # Better guidance and a full-resolution sphere
 
-The intended result is a full **360° horizontal × 180° vertical** photograph, including above and below the camera, exported as a 2:1 equirectangular image with spherical-viewer metadata and optional GPS. The current application captures the originals and metadata needed to develop that pipeline. Positional guidance, visual registration, neural matching, stitching, and spherical image export described below are proposed work, not implemented features.
+Version 0.2 implements **360° horizontal × 180° vertical** output, including above and below the camera, as a 2:1 equirectangular JPEG with spherical-viewer metadata and optional saved GPS. Capture, on-device visual registration/composition, export and interactive viewing are implemented. Positional guidance, neural matching, local parallax correction and advanced seam blending below remain proposed work.
+
+## Implemented stitching baseline
+
+Choose Create Photo Sphere from a saved capture. The app validates accepted originals and their poses, normalizes JPEG EXIF orientation and accounts for landscape field-of-view axes. SIFT features and mutual ratio matching run on working images up to 1280 pixels on the long side. Pose-overlap candidates include neighbouring rows and the closing 360° seam. A robust three-ray rotation fit rejects inconsistent matches; anchored rotation averaging then refines all verified edges with weak sensor priors. Matched image patches estimate scalar exposure gains.
+
+The final renderer decodes the full originals one at a time, bilinearly projects their pixels into a complete spherical canvas and feather-blends overlaps. It keeps an RGB8 panorama and uint16 weight plane, with a separate memory estimate for matching and composition. This baseline uses a bounded full canvas, not tiled multiband composition. The output resolution is source- and memory-limited; Full detail caps width at 20,480 and Quicker at 8,192. A smaller preview supports fast drag/pinch viewing while export retains master dimensions.
+
+The visual graph must contain verified overlap. Isolated photographs or disconnected groups retain pose-assisted placement with explicit warnings. Missing directions remain neutral gray, with measured footprint coverage reported separately from target completion. GPS is copied only when a saved valid location exists; GPano metadata describes the complete canvas and does not invent a compass heading. Cancelled/failed replacements preserve originals and the previous completed sphere.
+
+The current method assumes rotation around one projection centre. It does not refine full camera intrinsics/distortion, perform content-aware seam selection, remove moving people or correct depth-dependent parallax. Synthetic ground-truth tests exercise rotation, mixed JPEG orientation, coverage and metadata. Real-scene quality still requires controlled captures and inspection; see [VALIDATION.md](VALIDATION.md).
 
 ## What capture guidance does now
 
@@ -36,11 +46,11 @@ Near objects should tighten the allowed displacement. Use reliable scene distanc
 
 If simultaneous tracking and detail capture is unreliable, a candidate fallback is to track while aiming, pause tracking for the still, then reacquire and register the new frame visually. That fallback needs measurement; it is not a guarantee that tracking remains continuous.
 
-## Stitch from the actual originals
+## Improve stitching from the actual originals
 
-Start with a reproducible desktop processing pipeline consuming the existing ZIP format. This makes geometry and image-quality failures easier to inspect before introducing Android memory and thermal constraints. Port the proven components to a native background pipeline afterwards.
+The native mobile baseline now consumes existing saved sessions directly. Use exported originals and reproducible test scenes to evaluate the following improvements before adding their runtime cost to the phone pipeline.
 
-The proposed stages are:
+The longer-term pipeline is:
 
 1. **Read and calibrate.** Honour each JPEG's orientation, camera crop, focal length and available distortion parameters. Portrait and landscape files may occur in any capture order. Keep all original images immutable. Read `accepted` and pose-association metadata: rejected captures remain in the archive but do not satisfy target coverage. Use accepted captures as the initial set; retain rejected images for inspection or deliberate recovery. Select overlapping neighbours from actual viewing directions and image footprints, including cross-row neighbours and the closing 360° pair; consecutive filenames need not depict neighbouring views. Pose roll is normalized to the current viewfinder, so preserve the distinction between that UI measurement and the original device rotation vector.
 2. **Match and reject.** Extract features on working-resolution copies, match overlap regions, and use geometric verification to reject inconsistent correspondences. Preserve the coordinate transform back to the original images.
@@ -72,7 +82,7 @@ The following are illustrative output sizes, not promised detail levels:
 
 Blending pyramids, working buffers and source images need additional memory. This is why a mobile implementation should process tiles, cache only necessary decoded regions, and generate a smaller interactive preview separately. Choose final dimensions from actual source sampling and measured detail rather than upscaling to a large marketing number.
 
-The interoperable target is a 2:1 JPEG with GPano XMP fields describing equirectangular projection, full/cropped dimensions and viewer usage, plus EXIF location where enabled. Partial captures must retain honest crop/coverage information. Test the exported image in the user's actual Android viewers; metadata support, maximum texture sizes and resampling differ by viewer. The prototype currently exports an original-image ZIP, not this spherical JPEG. [Google spherical metadata specification](https://developers.google.com/streetview/spherical-metadata)
+The implemented export is a 2:1 JPEG with GPano XMP fields describing equirectangular projection, full/cropped dimensions and viewer usage, plus saved EXIF location where available. Partial captures retain the full spherical canvas, leave unphotographed areas gray and report estimated coverage. Test the exported image in the user's actual Android viewers; metadata support, maximum texture sizes and resampling differ by viewer. An original-image ZIP is also available. [Google spherical metadata specification](https://developers.google.com/streetview/spherical-metadata)
 
 ## Milestones and acceptance evidence
 
@@ -86,4 +96,4 @@ The interoperable target is a 2:1 JPEG with GPano XMP fields describing equirect
 | Better matching/warps | Compare identical source sets against the baseline: difficult texture, nearby railings, mixed lighting, moving people and repeated patterns. Report failures and excess deformation as well as average improvement. |
 | Mobile composition | Measure peak memory, processing time and thermal behaviour over repeated full spheres; cancel/restart without losing originals; inspect tile boundaries and final viewer compatibility. |
 
-Capture profiling should separate aiming/hold time, autofocus/exposure delay, camera/JPEG latency, file sync and manifest commit. Record median and tail latency, preview frame timing and memory over a sustained sequence. The 650 ms of qualifying hold time is a deliberate stability requirement; brief outliers pause its accumulation, and the timer should not hide processing stalls. Current exposure-pose rejection can flag angular motion or loss of alignment near a sampled exposure, but does not measure translation or prove that the whole exposure was blur-free. Current smoke instrumentation validates capture/storage mechanics, not the future stitching-quality or 6DoF milestones.
+Capture profiling should separate aiming/hold time, autofocus/exposure delay, camera/JPEG latency, file sync and manifest commit. Record median and tail latency, preview frame timing and memory over a sustained sequence. The 650 ms of qualifying hold time is a deliberate stability requirement; brief outliers pause its accumulation, and the timer should not hide processing stalls. Current exposure-pose rejection can flag angular motion or loss of alignment near a sampled exposure, but does not measure translation or prove that the whole exposure was blur-free. Separate synthetic stitching tests validate reconstruction against known geometry; they do not establish handheld real-scene quality or 6DoF tracking.

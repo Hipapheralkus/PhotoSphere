@@ -1,0 +1,292 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-10-23",
+  "opencvAndroidSdkSha256": "edfda20fdf65d0bd45391d168ec5261dd30b600b00279c4d910d7f1c3e020f0f",
+  "nativeLibraryEquality": {
+    "arm64-v8a": "SDK and Maven AAR libopencv_java4.so byte-identical",
+    "x86_64": "SDK and Maven AAR libopencv_java4.so byte-identical"
+  },
+  "files": [
+    {
+      "file": "androidx-exifinterface-1.4.2-LICENSE.txt",
+      "sha256": "809fa1ed21450f59827d1e9aec720bbc4b687434fa22283c6cb5dd82a47ab9c0",
+      "source": "https://dl.google.com/dl/android/maven2/androidx/exifinterface/exifinterface/1.4.2/exifinterface-1.4.2.aar",
+      "sourceArchivePath": "META-INF/androidx/exifinterface/exifinterface/LICENSE.txt"
+    },
+    {
+      "file": "jetbrains-annotations-13.0-copyright.txt",
+      "sha256": "9012fcb4c9b3e918c598a040ac5d20d606c34c94b8f6ac8907a8022dafc6e23f",
+      "source": "https://repo.maven.apache.org/maven2/org/jetbrains/annotations/13.0/annotations-13.0-sources.jar",
+      "note": "Distinct unchanged source copyright/license comments from published sources; complete Apache text included in this license directory."
+    },
+    {
+      "file": "jspecify-1.0.0-LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "source": "https://raw.githubusercontent.com/jspecify/jspecify/v1.0.0/LICENSE"
+    },
+    {
+      "file": "kotlin-stdlib-2.2.10/COPYRIGHT.txt",
+      "sha256": "8f1a1700adb5490604c6094fb137bf73f6c28d3ee554b58f3ff8ef975a79672d",
+      "source": "https://raw.githubusercontent.com/JetBrains/kotlin/v2.2.10/license/COPYRIGHT.txt"
+    },
+    {
+      "file": "kotlin-stdlib-2.2.10/LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "source": "https://raw.githubusercontent.com/JetBrains/kotlin/v2.2.10/license/LICENSE.txt"
+    },
+    {
+      "file": "kotlin-stdlib-2.2.10/boost-LICENSE.txt",
+      "sha256": "8d8291caf1cee26d23acf3eb67c9f9a2d58f1c681b16a4fbe8cbfb9e3c0b5a9b",
+      "source": "https://raw.githubusercontent.com/JetBrains/kotlin/v2.2.10/license/third_party/boost_LICENSE.txt"
+    },
+    {
+      "file": "kotlin-stdlib-2.2.10/guava-LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "source": "https://raw.githubusercontent.com/JetBrains/kotlin/v2.2.10/license/third_party/guava_license.txt"
+    },
+    {
+      "file": "kotlin-stdlib-2.2.10/gwt-LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "source": "https://raw.githubusercontent.com/JetBrains/kotlin/v2.2.10/license/third_party/gwt_license.txt"
+    },
+    {
+      "file": "kotlin-stdlib-2.2.10/threetenbp-LICENSE.txt",
+      "sha256": "d1bc53b493a3ab387b42717ed5c4b1976a5048996f81154278100bff86d39331",
+      "source": "https://raw.githubusercontent.com/JetBrains/kotlin/v2.2.10/license/third_party/threetenbp_license.txt"
+    },
+    {
+      "file": "ndk-r28c-LLVM-runtime-NOTICE.txt",
+      "sha256": "f96f763beb66a7ba7a667647fc64c0226ace875e590c831fdd9579ec1c1d91e1",
+      "source": "https://dl.google.com/android/repository/android-ndk-r28c-windows.zip",
+      "sourceArchivePath": "android-ndk-r28c/toolchains/llvm/prebuilt/windows-x86_64/NOTICE",
+      "note": "Complete unmodified LLVM toolchain notice, including libc++, libc++abi, libunwind and compiler-rt. Runtime ELF build IDs in the app match NDK 28.2.13676358."
+    },
+    {
+      "file": "opencv-4.13.0/LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/LICENSE"
+    },
+    {
+      "file": "opencv-4.13.0/components/SoftFloat-COPYING.txt",
+      "sha256": "0c5b08365136da52639d777f1ebfc03988b0169d80655c90c59f1b3fa3e526a2",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/SoftFloat-COPYING.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/ade-LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/ade-LICENSE"
+    },
+    {
+      "file": "opencv-4.13.0/components/carotene-source-notices.txt",
+      "sha256": "13c3b846b12fd711ed71f1bfe7cc8390647046c0540723a70998d515f02a2b88",
+      "source": "https://github.com/opencv/opencv/archive/refs/tags/4.13.0.zip",
+      "note": "Distinct leading license/copyright comments extracted without alteration from the tagged component sources; source paths precede each comment."
+    },
+    {
+      "file": "opencv-4.13.0/components/cpufeatures-LICENSE",
+      "sha256": "c870d52f42a8f93023b99a85fe68d02637d6b04e5f35bbcd7f98759adb4e4d49",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/cpufeatures-LICENSE"
+    },
+    {
+      "file": "opencv-4.13.0/components/cpufeatures-README.md",
+      "sha256": "66da62d48c88cdb5f124626bb9be1598203a7ecdfe2c4a306a94d1f962b39fc5",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/cpufeatures-README.md"
+    },
+    {
+      "file": "opencv-4.13.0/components/dlpack-LICENSE",
+      "sha256": "3e8f6bc39276a586d60c8c5aaece2ff989262181cf2b3d2a128db58f97a9300c",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/dlpack-LICENSE"
+    },
+    {
+      "file": "opencv-4.13.0/components/flann-source-notices.txt",
+      "sha256": "60b921a005830690f8080fc4541326d1eb16c78af49812baebbd5d6570b1af3a",
+      "source": "https://github.com/opencv/opencv/archive/refs/tags/4.13.0.zip",
+      "note": "Distinct leading license/copyright comments extracted without alteration from the tagged component sources; source paths precede each comment."
+    },
+    {
+      "file": "opencv-4.13.0/components/flatbuffers-LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/flatbuffers-LICENSE.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/ippicv-EULA.txt",
+      "sha256": "c1bf7165226036081d5cbe4baca565eb5e817fe56b9cf1ac7247688feb32b3e4",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/ippicv-EULA.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/ippicv-readme.htm",
+      "sha256": "60872339f83f97b5d102f68b43df8fa968e8b618a3ef69a0e6307d1e755251c1",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/ippicv-readme.htm"
+    },
+    {
+      "file": "opencv-4.13.0/components/ippicv-third-party-programs.txt",
+      "sha256": "152d84b967b38395b7b1d52fd515a397f6cab429832001b210812a9c5c8ea2c5",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/ippicv-third-party-programs.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/ippiw-EULA.txt",
+      "sha256": "c1bf7165226036081d5cbe4baca565eb5e817fe56b9cf1ac7247688feb32b3e4",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/ippiw-EULA.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/ippiw-support.txt",
+      "sha256": "ae29fd797424fcd465b3b8f09fc30b5145c512b3763f6172edf71780203c6912",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/ippiw-support.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/ippiw-third-party-programs.txt",
+      "sha256": "152d84b967b38395b7b1d52fd515a397f6cab429832001b210812a9c5c8ea2c5",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/ippiw-third-party-programs.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/ittnotify-BSD-3-Clause.txt",
+      "sha256": "cf48cdd9ed87c2031b68fb1b9f4cfb55d00dcf815b21a30bf8304aa1e5e6f76a",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/ittnotify-BSD-3-Clause.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/ittnotify-GPL-2.0-only.txt",
+      "sha256": "cbe0f9505c5ca02ee34bfca453df31a98e31e6d56afcdf8ab0f87f4c94f1181b",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/ittnotify-GPL-2.0-only.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/kleidicv-0.7.0-LICENSE.txt",
+      "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+      "source": "https://gitlab.arm.com/kleidi/kleidicv/-/archive/0.7.0/kleidicv-0.7.0.tar.gz",
+      "sourceArchivePath": "kleidicv-0.7.0/LICENSES/Apache-2.0.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/kleidicv-0.7.0-copyright.txt",
+      "sha256": "5607bd4a59e907736d65d3d9240189cfba1b5090c3df9fe5c96469adf0537dc3",
+      "source": "https://gitlab.arm.com/kleidi/kleidicv/-/archive/0.7.0/kleidicv-0.7.0.tar.gz",
+      "note": "Distinct SPDX copyright statements from tagged C/C++ sources; license text is preserved separately."
+    },
+    {
+      "file": "opencv-4.13.0/components/libjpeg-turbo-LICENSE.md",
+      "sha256": "96f5b328adbb78eeaaec6980d73fd558cb1e4d62560ed615646bc3cf5e532430",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/libjpeg-turbo-LICENSE.md"
+    },
+    {
+      "file": "opencv-4.13.0/components/libjpeg-turbo-README.ijg",
+      "sha256": "75815e3bf6484201a3c3d17a1bbf10f2e8e3237f84df10a2357ea896db2a81d6",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/libjpeg-turbo-README.ijg"
+    },
+    {
+      "file": "opencv-4.13.0/components/libjpeg-turbo-README.md",
+      "sha256": "c553459fc4ea1f69526f0edf0c8ff6c4002fda5b76094abefabdc3de1ee62c10",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/libjpeg-turbo-README.md"
+    },
+    {
+      "file": "opencv-4.13.0/components/libopenjp2-LICENSE",
+      "sha256": "a6af136f3e15038a666b61f376612a07d9a4e48cb7c01adbf3e33b3f14ab49b6",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/libopenjp2-LICENSE"
+    },
+    {
+      "file": "opencv-4.13.0/components/libopenjp2-README.md",
+      "sha256": "cc0090eb6abfbea7d44351851d04bcfcfeb9181eac9fcb8b2d108091b5eefc24",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/libopenjp2-README.md"
+    },
+    {
+      "file": "opencv-4.13.0/components/libpng-LICENSE",
+      "sha256": "16d9daaafbf63a31a5bdc91d4600972548fef5aaa1244202393288dbd079c49a",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/libpng-LICENSE"
+    },
+    {
+      "file": "opencv-4.13.0/components/libpng-README",
+      "sha256": "50da3b47458393a14a1cab5a6230b25e96a6cf951875586b275f40b166b11e27",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/libpng-README"
+    },
+    {
+      "file": "opencv-4.13.0/components/libtiff-LICENSE.md",
+      "sha256": "0e27c2382d7b8147972bbb746e04059a1152c8d0fda9d03ef1399d1a433c4ade",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/libtiff-LICENSE.md"
+    },
+    {
+      "file": "opencv-4.13.0/components/libwebp-COPYING.txt",
+      "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf",
+      "source": "https://github.com/opencv/opencv/archive/refs/tags/4.13.0.zip",
+      "sourceArchivePath": "opencv-4.13.0/3rdparty/libwebp/COPYING"
+    },
+    {
+      "file": "opencv-4.13.0/components/mscr-chi_table_LICENSE.txt",
+      "sha256": "676858659f4115246b41f2f44dcfbf17db52c6b1755f1102b78a87062dff0c07",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/mscr-chi_table_LICENSE.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/openexr-AUTHORS.ilmbase",
+      "sha256": "3d01213ed07453794228b95e41fd5897bad65e1342ebfdefbe52311d6e1adcb4",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/openexr-AUTHORS.ilmbase"
+    },
+    {
+      "file": "opencv-4.13.0/components/openexr-AUTHORS.openexr",
+      "sha256": "35560b29d013ceea33c66e8a0dfa4fc41768302e441c49bf98a3cffffbc17bde",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/openexr-AUTHORS.openexr"
+    },
+    {
+      "file": "opencv-4.13.0/components/openexr-LICENSE",
+      "sha256": "14eba5f05238f57c77e94f0ebd29a0b3736ba0456ff990cda16e21b6903ac453",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/openexr-LICENSE"
+    },
+    {
+      "file": "opencv-4.13.0/components/protobuf-LICENSE",
+      "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/protobuf-LICENSE"
+    },
+    {
+      "file": "opencv-4.13.0/components/protobuf-README.md",
+      "sha256": "aa924b1ceb243a25b4ff4a0360dc124a58d22633e9f6de02167d162b86968324",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/protobuf-README.md"
+    },
+    {
+      "file": "opencv-4.13.0/components/tbb-LICENSE.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/tbb-LICENSE.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/tbb-README.md",
+      "sha256": "9504c62f0e01a7ea5d15f7fcf2d52ec24acef60078ad10f0c55d63d68218fbe2",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/tbb-README.md"
+    },
+    {
+      "file": "opencv-4.13.0/components/tbb-third-party-programs.txt",
+      "sha256": "1634857eb058dce5278c57a832b8974190785145f4be9acdbdb511f3a0c4091c",
+      "source": "https://raw.githubusercontent.com/uxlfoundation/oneTBB/v2022.1.0/third-party-programs.txt"
+    },
+    {
+      "file": "opencv-4.13.0/components/vasot-LICENSE.txt",
+      "sha256": "a9c8a68807d39b6810d593008f02e7835a8f8280781e5ce9b544a7fb973bb79e",
+      "source": "https://github.com/opencv/opencv/releases/download/4.13.0/opencv-4.13.0-android-sdk.zip",
+      "sourceArchivePath": "OpenCV-android-sdk/sdk/etc/licenses/vasot-LICENSE.txt"
+    }
+  ]
+}

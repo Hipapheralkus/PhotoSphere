@@ -1,15 +1,16 @@
-# PhotoSphere 0.1.1 — guided capture prototype
+# PhotoSphere 0.2.0 — on-device stitching and viewing
 
-- Smoother pointing guidance and a steady-hold ring that tolerates brief jitter.
-- Automatic portrait and landscape layouts, including rotation during a capture.
-- Turn left, right, up, or down; the guide selects the nearest remaining direction.
-- Full-resolution camera JPEGs, optional GPS, motion/camera metadata, and original-preserving ZIP export.
-- Camera capability checks and honest resolution fallback on each phone.
+Captured originals can now become an interactive Photo Sphere on the phone. Open **Your captures → Create Photo Sphere**, choose output detail, then **Create**. When it finishes, choose **View sphere**; drag to look around, pinch to zoom and use **Export JPEG** to save the full-resolution spherical image.
 
-Install the debug APK on Android 11 or newer. This update can replace the first prototype without deleting existing captures. Export originals before uninstalling or clearing app data.
+- Visual feature matching refines recorded camera orientations, balances exposure and blends full-resolution originals onto a 360° × 180° canvas.
+- Full detail uses source sampling and available memory, up to 20,480 × 10,240. Quicker caps width at 8,192. These are limits, not a guarantee of resolved detail.
+- JPEG quality 97 with 4:4:4 colour sampling, GPano spherical metadata and saved GPS. There is no 10 MB file-size cap.
+- A separate small preview keeps viewing responsive. Portrait/landscape, drag, pinch and reset are supported.
+- Background progress and cancellation; failed or cancelled replacements preserve originals and the previous completed sphere.
+- Partial captures remain partial: missing directions stay gray. At least two overlapping accepted originals are required.
 
-The initial Pixel 10 Pro XL / Android 17 test captured 4080 × 3072 JPEGs in both modes. Larger output was not exposed by the selected public camera configuration. Capture and save took approximately 1.3 seconds in four test samples; autofocus reached its deadline in that scene. These are functional samples, not a general speed or sharpness guarantee.
+This first stitching implementation uses a rotational model and feather blending. Nearby objects may still misalign if the lens moves, and moving subjects can leave seams. Positional tracking, neural matching, depth correction and advanced seam blending are not implemented. Keep the lens near one point and capture every planned direction for a full sphere.
 
-This release captures and exports source images. Stitching, positional drift tracking and neural matching are not implemented yet. Keep the lens near one fixed point as you turn. The app has no network permission or upload service.
+The debug APK supports Android 11 or newer and can update the previous prototype while keeping captures. It includes native processing libraries and is substantially larger than the capture-only release. Export originals before uninstalling or clearing app data. Processing stays on the phone; the app has no network permission or upload service.
 
-Local build, unit tests and Android lint are checked. The hosted GitHub Actions job could not start because GitHub reported an account payment or spending-limit issue. See docs/VALIDATION.md for the exact validation scope.
+Local unit tests, build and lint pass. A 48-photo synthetic sphere passed visual alignment, full coverage, GPS/GPano, immutable-original, cancellation and interactive-viewer checks on an Android emulator. Physical Pixel stitching and external gallery compatibility remain to be tested. Hosted GitHub Actions remains blocked before runner startup by the account payment/spending-limit restriction. See [VALIDATION.md](VALIDATION.md) for exact scope.
