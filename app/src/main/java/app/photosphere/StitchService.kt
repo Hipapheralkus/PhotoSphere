@@ -63,6 +63,7 @@ class StitchService : Service() {
             running = work
             worker.execute { execute(work) }
         } catch (error: Exception) {
+            LocalDiagnostics.record(this, "stitch_start_failed", work.sessionId, mapOf("errorType" to error.javaClass.simpleName))
             StitchRepository.finish(this, work, StitchStatus.FAILED, "Could not start foreground processing: ${error.message ?: error.javaClass.simpleName}")
             StitchRepository.release(work)
             running = null
@@ -97,7 +98,9 @@ class StitchService : Service() {
         var completedDirectory: File? = null
         var committed = false
         var wakeLock: PowerManager.WakeLock? = null
-        val deadline = SystemClock.elapsedRealtime() + MAX_JOB_MS
+        val started = SystemClock.elapsedRealtime()
+        val deadline = started + MAX_JOB_MS
+        LocalDiagnostics.record(this, "stitch_started", work.sessionId, mapOf("quality" to work.quality.name))
         try {
             wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PhotoSphere:stitch")
                 .apply { setReferenceCounted(false); acquire(MAX_JOB_MS) }
@@ -108,7 +111,7 @@ class StitchService : Service() {
             checkpoint(work, deadline)
             val width = input.plan.width(work.quality)
             require(input.directory.usableSpace >= input.plan.requiredFreeBytes(work.quality)) {
-                "Not enough free storage. This job needs about ${input.plan.requiredFreeBytes(work.quality) / StitchSizing.MIB} MiB of workspace; free storage or choose Quick."
+                "Not enough free storage. This job needs about ${input.plan.requiredFreeBytes(work.quality) / StitchSizing.MIB} MiB of workspace; free some storage and try again."
             }
             val stagingRoot = File(input.directory, "stitch-work")
             check(stagingRoot.isDirectory || stagingRoot.mkdirs()) { "Cannot create stitching workspace" }
@@ -120,25 +123,26 @@ class StitchService : Service() {
             val preview = File(jobDirectory, "panorama-preview.jpg")
             var lastProgressTime = 0L
             var lastPercent = -1
-            val native = JSONObject(NativeStitcher.stitch(input.framesJson(), image.absolutePath, preview.absolutePath, width,
-                StitchProgress { percent, message ->
-                    val now = SystemClock.elapsedRealtime()
-                    if (now >= deadline) {
-                        work.interruption = "Stitching reached the 30-minute processing limit. Try Quick or generate again."
-                        work.cancelled.set(true)
+            val progressCallback = StitchProgress { percent, message ->
+                val now = SystemClock.elapsedRealtime()
+                if (now >= deadline) {
+                    work.interruption = "Stitching reached the processing limit. Your originals are safe; generate again to restart."
+                    work.cancelled.set(true)
+                }
+                if (work.cancelled.get() || work.terminal.get() || shuttingDown) false
+                else {
+                    val bounded = percent.coerceIn(0, 94)
+                    if (bounded != lastPercent && now - lastProgressTime >= 250L || now - lastProgressTime >= 1500L) {
+                        lastPercent = bounded
+                        lastProgressTime = now
+                        StitchRepository.update(this, work, StitchStatus.RUNNING, bounded, message)
+                        notifications.notify(NOTIFICATION_ID, notification(work, bounded, message))
                     }
-                    if (work.cancelled.get() || work.terminal.get() || shuttingDown) false
-                    else {
-                        val bounded = percent.coerceIn(0, 94)
-                        if (bounded != lastPercent && now - lastProgressTime >= 250L || now - lastProgressTime >= 1500L) {
-                            lastPercent = bounded
-                            lastProgressTime = now
-                            StitchRepository.update(this, work, StitchStatus.RUNNING, bounded, message)
-                            notifications.notify(NOTIFICATION_ID, notification(work, bounded, message))
-                        }
-                        true
-                    }
-                }))
+                    true
+                }
+            }
+            val native = JSONObject(NativeStitcher.stitch(
+                input.framesJson(), image.absolutePath, preview.absolutePath, width, progressCallback))
             checkpoint(work, deadline)
             when (native.optString("status")) {
                 "cancelled" -> throw Cancelled()
@@ -209,14 +213,23 @@ class StitchService : Service() {
             require(result.jobId == work.jobId) { "Panorama report could not be atomically replaced" }
             StitchRepository.finish(this, work, StitchStatus.SUCCEEDED,
                 if (coverage >= .995) "Photo Sphere ready" else "Partial Photo Sphere ready · ${(coverage * 100).toInt()}% sphere coverage", result)
+            LocalDiagnostics.record(this, "stitch_succeeded", work.sessionId, mapOf(
+                "durationMs" to SystemClock.elapsedRealtime() - started, "width" to actualWidth,
+                "height" to actualHeight, "sources" to input.frames.size, "coverage" to coverage,
+                "matchedPairs" to native.optInt("visuallyMatchedPairs"),
+                "residualDegrees" to native.optDouble("meanVisualResidualDegrees")))
         } catch (_: Cancelled) {
             val interrupted = work.interruption
+            LocalDiagnostics.record(this, "stitch_cancelled", work.sessionId, mapOf("interrupted" to (interrupted != null)))
             StitchRepository.finish(this, work, if (interrupted != null) StitchStatus.INTERRUPTED else StitchStatus.CANCELLED,
                 interrupted ?: "Stitching cancelled. Original photos and any earlier panorama are preserved.")
         } catch (error: Throwable) {
             val status = if (work.cancelled.get()) {
                 if (work.interruption != null) StitchStatus.INTERRUPTED else StitchStatus.CANCELLED
             } else StitchStatus.FAILED
+            LocalDiagnostics.record(this, "stitch_failed", work.sessionId, mapOf(
+                "status" to status.name, "errorType" to error.javaClass.simpleName,
+                "durationMs" to SystemClock.elapsedRealtime() - started))
             StitchRepository.finish(this, work, status, work.interruption ?: if (work.cancelled.get())
                 "Stitching cancelled. Original photos and any earlier panorama are preserved."
                 else "Could not create panorama: ${error.message ?: error.javaClass.simpleName}")
@@ -242,7 +255,7 @@ class StitchService : Service() {
 
     private fun checkpoint(work: StitchWork, deadline: Long) {
         if (SystemClock.elapsedRealtime() >= deadline) {
-            work.interruption = "Stitching reached the 30-minute processing limit. Try Quick or generate again."
+            work.interruption = "Stitching reached the processing limit. Your originals are safe; generate again to restart."
             work.cancelled.set(true)
         }
         if (work.cancelled.get() || work.terminal.get() || shuttingDown) throw Cancelled()

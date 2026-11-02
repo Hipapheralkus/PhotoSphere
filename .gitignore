@@ -14,4 +14,6 @@ artifacts/device/
 PANO_*.jpg
 *.hprof
 *.log
+__pycache__/
+*.pyc
 

@@ -18,6 +18,8 @@ data class CameraInfo(
     val verticalFov: Double,
     val maxResolutionMode: Boolean,
     val diagnosticsJson: String,
+    val aeLockSupported: Boolean = false,
+    val awbLockSupported: Boolean = false,
 ) {
     val megapixels: Double get() = jpegWidth.toDouble() * jpegHeight / 1_000_000.0
 }
@@ -34,4 +36,6 @@ data class CaptureMetadata(
     val bytes: Long,
     val durationMs: Long,
     val cameraMetadataJson: String,
+    /** Identifies the live capture session; never reuses a lock from a previous sphere. */
+    val brightnessSessionId: Long? = null,
 )

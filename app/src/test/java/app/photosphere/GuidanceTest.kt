@@ -1,7 +1,8 @@
 package app.photosphere
 
-import org.junit.Assert.*
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.Test
+import kotlin.math.*
 
 class GuidanceTest {
     private fun pose(now: Long, yaw: Double = 0.0, pitch: Double = 0.0, roll: Double = 0.0, speed: Double = 0.0) =
@@ -19,9 +20,9 @@ class GuidanceTest {
             assertTrue(plan.any { it.pitch == 90.0 })
             assertTrue(plan.any { it.pitch == -90.0 })
             for (pitch in -90..90 step 3) for (yaw in -180 until 180 step 3) {
-                assertTrue("Uncovered $yaw,$pitch at FOV $horizontal,$vertical", plan.any {
+                assertTrue(plan.any {
                     CapturePlan.covers(it, yaw.toDouble(), pitch.toDouble(), horizontal * 0.85, vertical * 0.85)
-                })
+                }, "Uncovered $yaw,$pitch at FOV $horizontal,$vertical")
             }
         }
     }
@@ -210,10 +211,138 @@ class GuidanceTest {
         val plan = CapturePlan.generate(48.0, 65.0)
         assertEquals(plan, CapturePlan.generate(65.0, 48.0))
         for (pitch in -90..90 step 3) for (yaw in -180 until 180 step 3) {
-            assertTrue("Mixed-orientation hole at $yaw,$pitch", plan.any { target ->
+            assertTrue(plan.any { target ->
                 val roll = if (target.id % 2 == 0) 4.0 else 94.0
                 CapturePlan.covers(target, yaw.toDouble(), pitch.toDouble(), 48.0 * 0.85, 65.0 * 0.85, roll)
-            })
+            }, "Mixed-orientation hole at $yaw,$pitch")
         }
+    }
+
+    @Test fun efficientPixelPlanUses33NaturalStableDirectionsAndExtraKeeps48() {
+        val efficient = CapturePlan.generate(56.23, 70.72)
+        val extra = CapturePlan.generate(56.23, 70.72, CaptureOverlap.EXTRA)
+        assertEquals(33, efficient.size)
+        assertEquals(48, extra.size)
+        assertEquals(CaptureTarget(0, 0.0, 0.0), efficient.first())
+        assertEquals(efficient.indices.toList(), efficient.map { it.id })
+        assertEquals(efficient, CapturePlan.generate(70.72, 56.23))
+        assertTrue(efficient.any { it.pitch == 90.0 })
+        assertTrue(efficient.any { it.pitch == -90.0 })
+        assertEquals(efficient.size, efficient.map { it.yaw to it.pitch }.toSet().size)
+        // Smaller lenses keep their conservative layout instead of accepting holes to save shots.
+        assertEquals(74, CapturePlan.generate(47.0, 60.0).size)
+        assertEquals(CapturePlan.generate(47.0, 60.0, CaptureOverlap.EXTRA), CapturePlan.generate(47.0, 60.0))
+        assertTrue(CapturePlan.generate(53.3, 70.0).size > 33)
+        assertEquals(33, CapturePlan.generate(53.5, 70.0).size)
+    }
+
+    @Test fun efficientSphericalVoronoiVerticesCertifyItsContinuousCoverageBound() {
+        // Every supporting convex-hull face normal is a spherical Voronoi vertex. The
+        // farthest of these certifies the continuous covering radius, not just sampled pixels.
+        val radius = coveringRadius(CapturePlan.generate(56.23, 70.72))
+        assertEquals(22.690480376, radius, .000001)
+        assertTrue(radius + 3.0 + 1.0 < 56.23 / 2.0)
+        assertTrue(coveringRadius(CapturePlan.generate(56.23, 70.72, CaptureOverlap.EXTRA)) < radius)
+    }
+
+    @Test fun denseSphereCertificateCoversAnyOrientationAndAnyThreeDegreeAimError() {
+        val cases = listOf(Triple(30.0, 45.0, CaptureOverlap.EFFICIENT),
+            Triple(47.0, 60.0, CaptureOverlap.EFFICIENT), Triple(56.23, 70.72, CaptureOverlap.EFFICIENT),
+            Triple(56.23, 70.72, CaptureOverlap.EXTRA), Triple(65.0, 85.0, CaptureOverlap.EFFICIENT))
+        for ((horizontal, vertical, overlap) in cases) {
+            val directions = CapturePlan.generate(horizontal, vertical, overlap).map(::direction)
+            var worstSample = 0.0
+            for (pitch in -90..90) for (yaw in -180 until 180) {
+                val point = direction(yaw.toDouble(), pitch.toDouble())
+                val nearest = directions.maxOf { it.dot(point) }
+                worstSample = max(worstSample, Math.toDegrees(acos(nearest.coerceIn(-1.0, 1.0))))
+            }
+            // Every unsampled point is within sqrt(.5^2+.5^2) degrees of this grid.
+            // Spherical distance is Lipschitz, so this certifies the regions between samples.
+            // A cone of half the shorter FOV is inside every rectangular frame, for ANY roll.
+            assertTrue(worstSample + sqrt(.5) <= min(horizontal, vertical) / 2.0 - 3.0,
+                "Coverage certificate failed for $horizontal/$vertical/$overlap")
+        }
+    }
+
+    @Test fun actualFramesRemainCoveredWithMixedOrientationRollAndIndependentAimErrors() {
+        for ((horizontal, vertical) in listOf(56.23 to 70.72, 47.0 to 60.0)) {
+            val plan = CapturePlan.generate(horizontal, vertical)
+            repeat(4) { scenario ->
+                val frames = plan.map { target ->
+                    val landscape = when (scenario) { 0 -> false; 1 -> true; 2 -> target.id % 2 == 0; else -> target.id % 3 != 0 }
+                    val moved = displaced(target, 3.0, target.id * 137.50776 + scenario * 90.0)
+                    val roll = if (abs(target.pitch) >= 75.0) wrapDegrees(target.id * 47.0 + scenario * 61.0)
+                        else if ((target.id + scenario) % 2 == 0) 4.0 else -4.0
+                    TestFrame(moved, if (landscape) vertical else horizontal, if (landscape) horizontal else vertical, roll)
+                }
+                for (pitch in -90..90 step 3) for (yaw in -180 until 180 step 3) {
+                    assertTrue(frames.any {
+                        CapturePlan.covers(it.target, yaw.toDouble(), pitch.toDouble(), it.hfov, it.vfov, it.roll)
+                    }, "Capture-error hole at $yaw/$pitch, FOV $horizontal/$vertical, scenario $scenario")
+                }
+            }
+        }
+    }
+
+    @Test fun pixelPlansHaveConnectedOverlapGraphsWithAtLeastThreeRobustNeighbours() {
+        for (overlap in CaptureOverlap.entries) {
+            val directions = CapturePlan.generate(56.23, 70.72, overlap).map(::direction)
+            // Even if both frames aim 3 degrees apart, these edges retain at least 12 degrees
+            // of common angular extent inside their roll-independent inscribed cones.
+            val maximumSeparation = 56.23 - 2.0 * 3.0 - 12.0
+            val neighbours = directions.mapIndexed { index, vector -> directions.indices.filter { other ->
+                other != index && Math.toDegrees(acos(vector.dot(directions[other]).coerceIn(-1.0, 1.0))) <= maximumSeparation
+            } }
+            assertTrue(neighbours.all { it.size >= 3 }, "Insufficient overlapping neighbours for $overlap")
+            val visited = mutableSetOf(0)
+            val pending = java.util.ArrayDeque<Int>().apply { add(0) }
+            while (pending.isNotEmpty()) neighbours[pending.removeFirst()].forEach { if (visited.add(it)) pending.add(it) }
+            assertEquals(directions.size, visited.size, "Overlap graph is disconnected for $overlap")
+        }
+    }
+
+    private data class TestFrame(val target: CaptureTarget, val hfov: Double, val vfov: Double, val roll: Double)
+    private data class TestVector(val x: Double, val y: Double, val z: Double) {
+        fun dot(other: TestVector) = x * other.x + y * other.y + z * other.z
+        operator fun minus(other: TestVector) = TestVector(x - other.x, y - other.y, z - other.z)
+        operator fun times(scale: Double) = TestVector(x * scale, y * scale, z * scale)
+        operator fun plus(other: TestVector) = TestVector(x + other.x, y + other.y, z + other.z)
+        fun cross(other: TestVector) = TestVector(y * other.z - z * other.y, z * other.x - x * other.z, x * other.y - y * other.x)
+    }
+
+    private fun direction(target: CaptureTarget) = direction(target.yaw, target.pitch)
+    private fun direction(yawDegrees: Double, pitchDegrees: Double): TestVector {
+        val yaw = Math.toRadians(yawDegrees); val pitch = Math.toRadians(pitchDegrees)
+        return TestVector(cos(pitch) * sin(yaw), cos(pitch) * cos(yaw), sin(pitch))
+    }
+
+    private fun displaced(target: CaptureTarget, distanceDegrees: Double, bearingDegrees: Double): CaptureTarget {
+        val yaw = Math.toRadians(target.yaw); val pitch = Math.toRadians(target.pitch)
+        val distance = Math.toRadians(distanceDegrees); val bearing = Math.toRadians(bearingDegrees)
+        val right = TestVector(cos(yaw), -sin(yaw), 0.0)
+        val up = TestVector(-sin(pitch) * sin(yaw), -sin(pitch) * cos(yaw), cos(pitch))
+        val shifted = direction(target) * cos(distance) + (right * sin(bearing) + up * cos(bearing)) * sin(distance)
+        return target.copy(yaw = Math.toDegrees(atan2(shifted.x, shifted.y)), pitch = Math.toDegrees(asin(shifted.z.coerceIn(-1.0, 1.0))))
+    }
+
+    private fun coveringRadius(plan: List<CaptureTarget>): Double {
+        val vectors = plan.map(::direction)
+        var maximum = 0.0
+        var supportingFaces = 0
+        for (a in vectors.indices) for (b in a + 1 until vectors.size) for (c in b + 1 until vectors.size) {
+            var normal = (vectors[b] - vectors[a]).cross(vectors[c] - vectors[a])
+            val norm = sqrt(normal.dot(normal))
+            if (norm < 1e-10) continue
+            normal *= 1.0 / norm
+            if (normal.dot(vectors[a]) < 0.0) normal *= -1.0
+            val distance = normal.dot(vectors[a])
+            if (vectors.all { normal.dot(it) <= distance + 1e-9 }) {
+                supportingFaces++
+                maximum = max(maximum, Math.toDegrees(acos(distance.coerceIn(-1.0, 1.0))))
+            }
+        }
+        assertTrue(supportingFaces > 0, "No enclosing spherical hull found")
+        return maximum
     }
 }

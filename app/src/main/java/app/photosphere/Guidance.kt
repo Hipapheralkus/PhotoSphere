@@ -97,12 +97,66 @@ object TargetSelector {
     }
 }
 
+enum class CaptureOverlap { EFFICIENT, EXTRA }
+
 object CapturePlan {
-    /** Use the shorter JPEG FOV on both axes so portrait/landscape changes cannot leave holes. */
-    fun generate(horizontalFov: Double, verticalFov: Double): List<CaptureTarget> {
+    // The 12 icosahedron vertices plus its 20 face centres have this exact maximum
+    // nearest-direction distance. One extra horizon target makes "Start here" natural.
+    private const val DUAL_COVERING_RADIUS = 22.690480376
+    private const val CAPTURE_AIM_ERROR = 3.0
+    private const val ADDITIONAL_CONE_MARGIN = 1.0
+
+    /**
+     * The shorter FOV inscribes a circular cone that survives any portrait/landscape or roll
+     * choice, including unrestricted pole roll. The 33-direction layout is used only when this
+     * cone covers its spherical cells after 3 degrees of aim error and another degree of margin.
+     * Extra overlap retains the denser latitude plan; narrow lenses use it in both modes.
+     */
+    fun generate(horizontalFov: Double, verticalFov: Double, overlap: CaptureOverlap = CaptureOverlap.EFFICIENT): List<CaptureTarget> {
         require(horizontalFov.isFinite() && horizontalFov in 15.0..150.0)
         require(verticalFov.isFinite() && verticalFov in 15.0..150.0)
         val safeFov = min(horizontalFov, verticalFov)
+        val extra = latitudePlan(safeFov)
+        return if (overlap == CaptureOverlap.EFFICIENT && extra.size > 33 &&
+            safeFov / 2.0 >= DUAL_COVERING_RADIUS + CAPTURE_AIM_ERROR + ADDITIONAL_CONE_MARGIN) {
+            efficientDirections
+        } else extra
+    }
+
+    private val efficientDirections: List<CaptureTarget> by lazy {
+        // With a vertex at each pole, the remaining icosahedron vertices form two
+        // five-point rings at +/-atan(1/2), staggered by 36 degrees.
+        val vertices = mutableListOf(Vector(0.0, 0.0, 1.0), Vector(0.0, 0.0, -1.0))
+        val latitude = atan(0.5)
+        for (hemisphere in listOf(1.0, -1.0)) repeat(5) { index ->
+            val yaw = Math.toRadians(index * 72.0 + if (hemisphere > 0.0) 0.0 else 36.0)
+            vertices += Vector(cos(latitude) * sin(yaw), cos(latitude) * cos(yaw), hemisphere * sin(latitude))
+        }
+        val centres = mutableListOf<Vector>()
+        val adjacentDot = 1.0 / sqrt(5.0)
+        for (a in vertices.indices) for (b in a + 1 until vertices.size) for (c in b + 1 until vertices.size) {
+            if (abs(vertices[a].dot(vertices[b]) - adjacentDot) < 1e-9 &&
+                abs(vertices[a].dot(vertices[c]) - adjacentDot) < 1e-9 &&
+                abs(vertices[b].dot(vertices[c]) - adjacentDot) < 1e-9) {
+                centres += (vertices[a] + vertices[b] + vertices[c]).normalized()
+            }
+        }
+        check(centres.size == 20)
+        val directions = (vertices + centres).map { vector ->
+            val yaw = if (abs(vector.z) > 1.0 - 1e-10) 0.0 else Math.toDegrees(atan2(vector.x, vector.y))
+            CaptureTarget(0, wrapDegrees(yaw), Math.toDegrees(asin(vector.z.coerceIn(-1.0, 1.0))))
+        }.sortedWith(compareBy<CaptureTarget> { abs(it.pitch) }.thenByDescending { it.pitch }.thenBy { it.yaw })
+        (listOf(CaptureTarget(0, 0.0, 0.0)) + directions).mapIndexed { index, target -> target.copy(id = index) }
+    }
+
+    private data class Vector(val x: Double, val y: Double, val z: Double) {
+        fun dot(other: Vector) = x * other.x + y * other.y + z * other.z
+        operator fun plus(other: Vector) = Vector(x + other.x, y + other.y, z + other.z)
+        fun normalized(): Vector = sqrt(dot(this)).let { Vector(x / it, y / it, z / it) }
+    }
+
+    /** Conservative legacy latitude spacing, retained as the explicit Extra overlap choice. */
+    private fun latitudePlan(safeFov: Double): List<CaptureTarget> {
         val plan = mutableListOf<CaptureTarget>()
         val stepsToPole = ceil(90.0 / (safeFov * 0.55)).toInt().coerceAtLeast(1)
         val rowStep = 90.0 / stepsToPole

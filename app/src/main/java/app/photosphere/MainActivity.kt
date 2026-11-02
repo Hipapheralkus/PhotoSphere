@@ -35,9 +35,12 @@ class MainActivity : Activity() {
     private lateinit var camera: CameraEngine
     private lateinit var tracker: OrientationTracker
     private val guidance = Guidance()
+    private val retryPolicy = CaptureRetryPolicy()
     private val poseHistory = PoseHistory()
     private var screen = "home"
     private var quality = CaptureQuality.FAST
+    private var overlap = CaptureOverlap.EFFICIENT
+    private var keepBrightnessSteady = true
     private var locationEnabled = false
     private var lastLocation: Location? = null
     private var cameraInfo: CameraInfo? = null
@@ -45,9 +48,13 @@ class MainActivity : Activity() {
     private var plan = emptyList<CaptureTarget>()
     private var session: CaptureSession? = null
     private var targetIndex = 0
+    private var manualTargetId: Int? = null
+    private var retryAtMs = 0L
+    private var pendingCameraError: String? = null
     private val completed = mutableSetOf<Int>()
     private var busy = false
     private var paused = false
+    private var pauseVersion = 0
     private var activityResumed = false
     private var cameraOpening = false
     private var savedUntilMs = 0L
@@ -67,6 +74,8 @@ class MainActivity : Activity() {
     private lateinit var resolution: TextView
     private lateinit var action: Button
     private lateinit var finish: Button
+    private lateinit var directionAction: Button
+    private lateinit var captureOptions: LinearLayout
     private lateinit var cameraRoot: FrameLayout
     private lateinit var previewPane: FrameLayout
     private lateinit var captureHeader: LinearLayout
@@ -85,6 +94,8 @@ class MainActivity : Activity() {
         camera = CameraEngine(this)
         tracker = OrientationTracker(this, ::onPose)
         quality = if (getPreferences(0).getBoolean("detail", false)) CaptureQuality.DETAIL else CaptureQuality.FAST
+        overlap = if (getPreferences(0).getBoolean("extraOverlap", false)) CaptureOverlap.EXTRA else CaptureOverlap.EFFICIENT
+        keepBrightnessSteady = getPreferences(0).getBoolean("keepBrightnessSteady", true)
         locationEnabled = getPreferences(0).getBoolean("location", false) && hasLocationPermission()
         if (Build.VERSION.SDK_INT >= 33) {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT) { goBack() }
@@ -136,6 +147,9 @@ class MainActivity : Activity() {
     override fun onPause() {
         activityResumed = false
         if (screen == "capture") {
+            retryAtMs = 0L
+            pauseVersion++
+            if (session != null || busy) LocalDiagnostics.record(this, "capture_interrupted", session?.id, mapOf("busy" to busy, "savedCount" to completed.size))
             interrupted = session != null || busy
             paused = session != null
             guidance.reset()
@@ -155,7 +169,7 @@ class MainActivity : Activity() {
         stitchObservers.clear()
         sessionGeneration++
         tracker.stop()
-        camera.close()
+        camera.endCaptureSession(); camera.close()
         main.removeCallbacksAndMessages(null)
         io.shutdown()
         super.onDestroy()
@@ -188,7 +202,7 @@ class MainActivity : Activity() {
     private fun showHome() {
         screen = "home"
         tracker.stop()
-        camera.close()
+        camera.endCaptureSession(); camera.close()
         cameraOpening = false
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val host = FrameLayout(this).apply { setBackgroundColor(ink) }
@@ -210,15 +224,14 @@ class MainActivity : Activity() {
         body.addView(sections)
         intro.addView(text("A whole place.\nOne memory.", if (landscape) 31 else 39, white, true).apply { letterSpacing = -0.035f; setLineSpacing(0f, 1.02f) })
         intro.addView(space(12))
-        intro.addView(text("Look around. Follow the light.\nWe’ll take each photo when you’re still.", if (landscape) 15 else 17, muted).apply { setLineSpacing(dp(3).toFloat(), 1f) })
+        intro.addView(text("Keep the camera lens over one spot.\nMove yourself around it.", if (landscape) 15 else 17, muted).apply { setLineSpacing(dp(3).toFloat(), 1f) })
         intro.addView(OrbitIllustration(this), LinearLayout.LayoutParams(-1, dp(if (landscape) 128 else 186)))
-        val modes = row().apply { gravity = Gravity.TOP }
-        modes.addView(modeCard("Everyday", "Quick & full resolution", CaptureQuality.FAST), LinearLayout.LayoutParams(0, dp(91), 1f).apply { marginEnd = dp(10) })
-        modes.addView(modeCard("More detail", "Larger if supported", CaptureQuality.DETAIL), LinearLayout.LayoutParams(0, dp(91), 1f))
-        choices.addView(modes)
-        choices.addView(space(if (landscape) 8 else 17))
+        choices.addView(button("Start a sphere", true) { startRequested() }, LinearLayout.LayoutParams(-1, dp(if (landscape) 52 else 58)))
+        choices.addView(space(10))
+        choices.addView(button("Gallery", false) { showSessions() }, LinearLayout.LayoutParams(-1, dp(52)))
+        choices.addView(space(if (landscape) 10 else 18))
         val loc = Switch(this).apply {
-            text = "Remember this place"
+            text = "Save this place’s location"
             contentDescription = "Save GPS location with photos. Optional."
             setTextColor(white); textSize = 16f
             isChecked = locationEnabled
@@ -233,12 +246,10 @@ class MainActivity : Activity() {
             }
         }
         choices.addView(loc)
-        choices.addView(text("Optional GPS. Your photos stay on your phone.", 13, muted))
-        choices.addView(space(if (landscape) 12 else 24))
-        choices.addView(button("Start a sphere", true) { startRequested() }, LinearLayout.LayoutParams(-1, dp(if (landscape) 48 else 58)))
-        choices.addView(space(10))
-        choices.addView(button("Your captures", false) { showSessions() }, LinearLayout.LayoutParams(-1, dp(if (landscape) 48 else 52)))
-        choices.addView(space(18))
+        choices.addView(text("Optional. The location stays with your photos.", 13, muted))
+        choices.addView(space(12))
+        choices.addView(button("Capture options", false) { showCaptureOptions() }.apply { textSize = 14f }, LinearLayout.LayoutParams(-1, dp(48)))
+        choices.addView(space(14))
         choices.addView(text("ALL ON YOUR PHONE", 10, mint, true).apply { letterSpacing = .16f; gravity = Gravity.CENTER })
         choices.addView(space(7))
         choices.addView(text("Capture. Create your sphere. Look around.", 12, muted).apply { gravity = Gravity.CENTER })
@@ -246,22 +257,41 @@ class MainActivity : Activity() {
         installRoot(host)
     }
 
-    private fun modeCard(title: String, subtitle: String, mode: CaptureQuality): View {
-        val selected = mode == quality
-        return column(14).apply {
-            background = rounded(if (selected) Color.rgb(33, 61, 46) else card, 20, if (selected) mint else Color.rgb(43, 62, 52))
-            gravity = Gravity.CENTER_VERTICAL
-            isClickable = true; isFocusable = true
-            contentDescription = "$title. $subtitle. ${if (selected) "Selected" else "Not selected"}"
-            addView(text("${if (selected) "●" else "○"}  $title", 17, if (selected) mint else white, true))
-            addView(space(7))
-            addView(text(subtitle, 11, muted))
-            setOnClickListener {
-                quality = mode
-                getPreferences(0).edit().putBoolean("detail", mode == CaptureQuality.DETAIL).apply()
-                showHome()
+    private fun showCaptureOptions() {
+        val body = column(22)
+        body.addView(text("Ready for everyday moments. These extras are optional.", 15, muted))
+        body.addView(space(14))
+        body.addView(Switch(this).apply {
+            text = "Keep brightness steady"; textSize = 17f; setTextColor(white); minHeight = dp(52)
+            isChecked = keepBrightnessSteady
+            setOnCheckedChangeListener { _, checked ->
+                keepBrightnessSteady = checked
+                getPreferences(0).edit().putBoolean("keepBrightnessSteady", checked).apply()
             }
-        }
+        })
+        body.addView(text("Uses the first good photo to keep brightness and color more consistent. Turn off for automatic adjustments. Unsupported cameras stay automatic.", 13, muted))
+        body.addView(space(16))
+        body.addView(Switch(this).apply {
+            text = "More detail"; textSize = 17f; setTextColor(white); minHeight = dp(52)
+            isChecked = quality == CaptureQuality.DETAIL
+            setOnCheckedChangeListener { _, checked ->
+                quality = if (checked) CaptureQuality.DETAIL else CaptureQuality.FAST
+                getPreferences(0).edit().putBoolean("detail", checked).apply()
+            }
+        })
+        body.addView(text("Larger originals when your camera supports them. Saving can take longer.", 13, muted))
+        body.addView(space(16))
+        body.addView(Switch(this).apply {
+            text = "Extra overlap"; textSize = 17f; setTextColor(white); minHeight = dp(52)
+            isChecked = overlap == CaptureOverlap.EXTRA
+            setOnCheckedChangeListener { _, checked ->
+                overlap = if (checked) CaptureOverlap.EXTRA else CaptureOverlap.EFFICIENT
+                getPreferences(0).edit().putBoolean("extraOverlap", checked).apply()
+            }
+        })
+        body.addView(text("More stops can help in plain rooms and tricky scenes. Leave off for a quicker capture.", 13, muted))
+        AlertDialog.Builder(this).setTitle("Capture options").setView(ScrollView(this).apply { addView(body) })
+            .setPositiveButton("Done", null).show()
     }
 
     private fun startRequested() {
@@ -292,6 +322,8 @@ class MainActivity : Activity() {
         screen = "capture"
         sessionGeneration++
         session = null; targetIndex = 0; completed.clear(); paused = false; busy = false
+        manualTargetId = null; retryAtMs = 0L; retryPolicy.reset()
+        pendingCameraError = null
         cameraInfo = null; pose = null; guidanceNotice = null; lastShotMs = null
         interrupted = false; endingSession = false
         poseHistory.clear()
@@ -320,7 +352,11 @@ class MainActivity : Activity() {
         captureHeader.addView(space(10))
         resolution = text("Checking your camera…", 12, muted).apply { gravity = Gravity.CENTER }
         captureHeader.addView(resolution)
-        map = SphereMapView(this)
+        map = SphereMapView(this).apply {
+            isEnabled = false
+            onTargetSelected = ::selectDirection
+            onChooseDirection = ::showDirectionChooser
+        }
         previewPane.addView(captureHeader, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
         previewPane.addView(map, FrameLayout.LayoutParams(-1, dp(132), Gravity.TOP))
         captureControls = column(24).apply {
@@ -328,7 +364,7 @@ class MainActivity : Activity() {
             setPadding(dp(24), dp(50), dp(24), dp(22))
         }
         statusTitle = text("Let’s find your starting point", 27, white, true).apply { gravity = Gravity.CENTER }
-        statusDetail = text("Portrait or landscape. Keep the lens in one place as you turn.", 15, muted).apply { gravity = Gravity.CENTER; minHeight = dp(48); setLineSpacing(dp(2).toFloat(), 1f) }
+        statusDetail = text("Keep the camera lens over one spot. Move yourself around it.", 15, muted).apply { gravity = Gravity.CENTER; minHeight = dp(48); setLineSpacing(dp(2).toFloat(), 1f) }
         captureControls.addView(statusTitle)
         captureControls.addView(space(10))
         captureControls.addView(statusDetail)
@@ -337,8 +373,14 @@ class MainActivity : Activity() {
             primaryCaptureAction()
         }.apply { isEnabled = false }
         captureControls.addView(action, LinearLayout.LayoutParams(-1, dp(56)))
-        finish = button("Save & finish", false) { requestFinish() }.apply { visibility = View.GONE }
-        captureControls.addView(finish, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(8) })
+        captureOptions = row().apply { visibility = View.GONE }
+        directionAction = button("Choose direction", false) {
+            if (manualTargetId != null) followAim() else showDirectionChooser()
+        }.apply { textSize = 13f }
+        captureOptions.addView(directionAction, LinearLayout.LayoutParams(0, dp(48), 1.3f).apply { marginEnd = dp(8) })
+        finish = button("Finish", false) { requestFinish() }
+        captureOptions.addView(finish, LinearLayout.LayoutParams(0, dp(48), 1f))
+        captureControls.addView(captureOptions, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(8) })
         cameraRoot.addView(captureControls, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
         cameraRoot.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or, ob ->
             if (r - l != or - ol || b - t != ob - ot) layoutCapture()
@@ -389,7 +431,6 @@ class MainActivity : Activity() {
         statusTitle.textSize = if (landscape) 24f else 27f
         statusDetail.textSize = if (landscape) 14f else 15f
         action.layoutParams = LinearLayout.LayoutParams(-1, dp(if (landscape) 52 else 56))
-        finish.layoutParams = LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(8) }
         positionMap()
         previewPane.post { camera.refreshPreviewTransform(); fitGuidanceToPreview() }
     }
@@ -430,30 +471,41 @@ class MainActivity : Activity() {
     }
 
     private fun openCamera() {
-        if (cameraOpening || screen != "capture" || !activityResumed) return
+        if (cameraOpening || camera.isReady || screen != "capture" || !activityResumed || interrupted || endingSession) return
         cameraOpening = true
         val generation = sessionGeneration
         camera.open(preview, quality, { info ->
             if (generation != sessionGeneration || screen != "capture") return@open
+            cameraOpening = false
+            pendingCameraError = null
             cameraInfo = info
             fitGuidanceToPreview()
             if (session == null) {
-                plan = CapturePlan.generate(info.horizontalFov, info.verticalFov)
-                counter.text = "Ready to look around"
+                plan = CapturePlan.generate(info.horizontalFov, info.verticalFov, overlap)
+                counter.text = "${plan.size} stops · any order"
                 map.setPlan(plan.map { it.yaw to it.pitch }, completed, 0)
                 action.text = "Start here"
                 statusTitle.text = "Let’s find your starting point"
-                statusDetail.text = "Portrait or landscape. Keep the lens in one place as you turn."
+                statusDetail.text = "Keep the camera lens over one spot. Move yourself around it."
+                if (keepBrightnessSteady && !info.aeLockSupported)
+                    statusDetail.append(" This camera keeps brightness automatic.")
             } else action.text = if (paused) "Resume capture" else "Pause capture"
             if (session != null && paused) {
                 statusTitle.text = "Ready when you are"
-                statusDetail.text = "Keep the lens near the same spot, then resume."
+                statusDetail.text = "Keep the camera lens over one spot. Move yourself around it when you resume."
             }
             resolution.text = String.format(Locale.US, "%.1f MP originals  ·  %s", info.megapixels, if (quality == CaptureQuality.FAST) "Everyday" else "More detail")
             action.isEnabled = guidanceNotice == null
         }, { error ->
             if (generation != sessionGeneration || screen != "capture") return@open
             cameraOpening = false
+            if (session != null) {
+                // Camera shutdown can report both an overall error and a shot callback.
+                // Keep the shot's durable write/record as the single owner of busy until it ends.
+                if (busy) { pendingCameraError = error; return@open }
+                captureFailed(error, CaptureRetryPolicy.classifyCameraMessage(error), generation)
+                return@open
+            }
             paused = true
             statusTitle.text = "Camera needs a moment"
             statusDetail.text = error
@@ -464,7 +516,10 @@ class MainActivity : Activity() {
 
     private fun primaryCaptureAction() {
         if (busy) return
+        // The visible Pause action keeps its meaning even while an automatic camera reopen waits.
+        if (session != null && !paused) { togglePause(); return }
         if (!camera.isReady) {
+            if (session != null) { paused = false; retryPolicy.reset(); retryAtMs = 0L; guidance.reset() }
             action.isEnabled = false
             camera.close()
             cameraOpening = false
@@ -491,23 +546,33 @@ class MainActivity : Activity() {
                 main.post {
                     if (generation != sessionGeneration || screen != "capture") return@post
                     session = created
+                    camera.beginCaptureSession(keepBrightnessSteady)
+                    LocalDiagnostics.record(this, "capture_session_started", created.id, mapOf("targetCount" to plan.size, "quality" to quality.name, "overlap" to overlap.name,
+                        "keepBrightnessSteady" to keepBrightnessSteady, "aeLockSupported" to info.aeLockSupported, "awbLockSupported" to info.awbLockSupported))
                     busy = false; paused = false
                     if (!activityResumed || interrupted) { interrupted = true; finishSession(); return@post }
                     action.text = "Pause capture"; action.isEnabled = true
-                    finish.visibility = View.VISIBLE
+                    captureOptions.visibility = View.VISIBLE
+                    map.isEnabled = true
                     updateProgress()
                 }
-            } catch (e: Exception) { main.post { busy = false; action.isEnabled = true; showError("Couldn’t start capture", e) } }
+            } catch (e: Exception) { main.post {
+                if (generation != sessionGeneration || screen != "capture" || isDestroyed) return@post
+                busy = false; action.isEnabled = true; showError("Couldn’t start capture", e)
+            } }
         }
     }
 
     private fun togglePause() {
         if (busy) return
         paused = !paused
+        pauseVersion++
+        retryAtMs = 0L
+        if (!paused) retryPolicy.reset()
         guidance.reset()
         action.text = if (paused) "Resume capture" else "Pause capture"
         statusTitle.text = if (paused) "Take your time" else "Find the next light"
-        statusDetail.text = if (paused) "Your photos are safe. Keep the lens near the same spot when you resume." else "Move gently. Stop when the two circles meet."
+        statusDetail.text = if (paused) "Your photos are safe. Keep the camera lens over one spot. Move yourself around it." else "Move gently around the lens. Stop when the two circles meet."
         if (paused) overlay.update(0.0, 0.0, 0.0, 0.0, "paused")
     }
 
@@ -522,8 +587,19 @@ class MainActivity : Activity() {
         poseHistory.add(value)
         if (screen != "capture" || !activityResumed || session == null || paused || busy || completed.size >= plan.size) return
         val now = SystemClock.elapsedRealtime()
+        if (retryAtMs > 0L) {
+            if (now < retryAtMs) return
+            retryAtMs = 0L
+            guidance.reset() // Retry never reuses a partly filled hold ring: earn a fresh 650 ms hold.
+            if (!camera.isReady) {
+                camera.close(); cameraOpening = false; openCamera()
+                return
+            }
+        }
+        if (!camera.isReady || cameraOpening) return
         if (now < savedUntilMs) return
-        val target = TargetSelector.select(value, plan, completed, targetIndex) ?: return
+        val target = manualTargetId?.let { id -> plan.firstOrNull { it.id == id && id !in completed } }
+            ?: TargetSelector.select(value, plan, completed, targetIndex) ?: return
         if (target.id != targetIndex) {
             targetIndex = target.id
             guidance.reset()
@@ -551,7 +627,7 @@ class MainActivity : Activity() {
                 }
                 state.angularError > 3.0 -> {
                     statusTitle.text = if (state.angularError <= 6.0) "Almost there" else directionText(state.deltaYaw, state.deltaPitch, target.pitch)
-                    statusDetail.text = "Choose any direction. Bring a light into the center."
+                    statusDetail.text = if (manualTargetId != null) "Your chosen direction. Follow my aim lets you change freely." else "Point anywhere, or tap the map to choose a different light."
                 }
                 abs(wrapDegrees(roll)) > 4.0 -> {
                     statusTitle.text = "Level your phone"
@@ -563,7 +639,7 @@ class MainActivity : Activity() {
                 }
                 else -> {
                     statusTitle.text = directionText(state.deltaYaw, state.deltaPitch, target.pitch)
-                    statusDetail.text = "Choose any direction. Bring a light into the center."
+                    statusDetail.text = if (manualTargetId != null) "Your chosen direction. Bring its light into the center." else "Point anywhere, or tap the map to choose a different light."
                 }
             }
         }
@@ -572,10 +648,11 @@ class MainActivity : Activity() {
 
     private fun capture(target: CaptureTarget, shutterPose: Pose) {
         val current = session ?: return
-        if (busy || paused) return
+        if (busy || paused || !activityResumed || interrupted || endingSession || !camera.isReady) return
         busy = true
         guidance.markCaptureStarted()
         action.isEnabled = false; finish.isEnabled = false
+        directionAction.isEnabled = false; map.isEnabled = false
         statusTitle.text = "Taking your photo…"
         statusDetail.text = "Keep still for one more moment."
         overlay.update(0.0, 0.0, 0.0, 1.0, "capture")
@@ -607,47 +684,154 @@ class MainActivity : Activity() {
                                 store.recordCapture(current, target, association.pose, associatedMetadata, destination, location?.asCaptureLocation(), association.samples, accepted)
                                 main.post {
                                     if (generation != sessionGeneration || screen != "capture") return@post
+                                    camera.resolveCapture(metadata, accepted)
                                     if (!accepted) {
-                                        captureFailed("The phone moved while taking the photo. The original is preserved; hold still and try this direction again.")
+                                        LocalDiagnostics.record(this, "capture_rejected", current.id, mapOf("targetId" to target.id, "reason" to "exposure_motion_or_rotation"))
+                                        val deferred = pendingCameraError
+                                        if (deferred != null && CaptureRetryPolicy.classifyCameraMessage(deferred) == CaptureFailureKind.PERMANENT)
+                                            captureFailed(deferred, CaptureFailureKind.PERMANENT, generation)
+                                        else captureFailed("The phone moved during that photo.", CaptureFailureKind.MOTION, generation)
                                         return@post
                                     }
                                     completed.add(target.id)
+                                    LocalDiagnostics.record(this, "capture_saved", current.id, mapOf("targetId" to target.id, "savedCount" to completed.size, "durationMs" to metadata.durationMs))
+                                    if (manualTargetId == target.id) manualTargetId = null
+                                    retryPolicy.reset(); retryAtMs = 0L
                                     busy = false
                                     lastShotMs = metadata.durationMs
                                     savedUntilMs = SystemClock.elapsedRealtime() + 420
                                     guidance.reset()
                                     action.isEnabled = true; finish.isEnabled = true
+                                    directionAction.isEnabled = true; map.isEnabled = true
                                     statusTitle.text = "Got it ✓"
-                                    statusDetail.text = "Original saved. Explore in any direction."
+                                    statusDetail.text = "Keep the lens over the same spot as you turn."
+                                    val brightness = frame.optJSONObject("brightnessLock")
+                                    if (keepBrightnessSteady && brightness?.optBoolean("aeApplied") != true)
+                                        statusDetail.text = "Brightness is automatic for this photo. Keep the lens over the same spot."
+                                    resolution.text = String.format(Locale.US, "%.1f MP originals  ·  %s", cameraInfo?.megapixels ?: 0.0,
+                                        if (brightness?.optBoolean("aeApplied") == true) "Steady brightness" else "Automatic brightness")
                                     overlay.update(0.0, 0.0, 0.0, 1.0, "saved")
                                     overlay.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                                     updateProgress()
                                     if (completed.size == plan.size || interrupted) finishSession()
+                                    else pendingCameraError?.let { captureFailed(it, CaptureRetryPolicy.classifyCameraMessage(it), generation) }
                                 }
-                            } catch (e: Exception) { main.post { captureFailed("The photo is on disk, but its session record couldn’t be saved. ${e.message}") } }
+                            } catch (e: Exception) { main.post {
+                                camera.resolveCapture(metadata, false)
+                                captureFailed("The photo is on disk, but its session record couldn’t be saved. ${e.message}", CaptureFailureKind.PERMANENT, generation)
+                            } }
                         }
-                    }, { error -> if (generation == sessionGeneration && screen == "capture") captureFailed(error) })
+                    }, { error ->
+                        val cause = pendingCameraError ?: error
+                        captureFailed(cause, CaptureRetryPolicy.classifyCameraMessage(cause), generation)
+                    })
                 }
-            } catch (e: Exception) { main.post { captureFailed(e.message ?: "Couldn’t create the original file.") } }
+            } catch (e: Exception) { main.post { captureFailed(e.message ?: "Couldn’t create the original file.", CaptureFailureKind.PERMANENT, generation) } }
         }
     }
 
-    private fun captureFailed(error: String) {
-        busy = false; paused = true
+    private fun captureFailed(error: String, kind: CaptureFailureKind, generation: Int) {
+        if (isDestroyed || generation != sessionGeneration || screen != "capture" || endingSession) return
+        val wasPaused = paused
+        pendingCameraError = null
+        busy = false
         guidance.reset()
-        if (screen != "capture") return
+        savedUntilMs = 0L
         if (interrupted && session != null) { finishSession(); return }
         action.isEnabled = true; finish.isEnabled = true
+        directionAction.isEnabled = true; map.isEnabled = true
+        val decision = retryPolicy.failed(kind)
+        LocalDiagnostics.record(this, "capture_failure", session?.id, mapOf("kind" to kind.name, "attempt" to decision.attempt,
+            "automaticRetry" to (!wasPaused && activityResumed && decision.retryDelayMs != null), "targetId" to targetIndex))
+        if (!wasPaused && activityResumed && decision.retryDelayMs != null) {
+            retryAtMs = SystemClock.elapsedRealtime() + decision.retryDelayMs
+            action.text = "Pause capture"
+            statusTitle.text = if (kind == CaptureFailureKind.MOTION) "Let’s get a steadier photo" else "Camera is catching up"
+            statusDetail.text = if (kind == CaptureFailureKind.MOTION) "$error Keep the circles together; we’ll retry automatically." else "We’ll retry automatically. Your saved photos are safe."
+            overlay.update(0.0, 0.0, 0.0, 0.0, "aim")
+            return
+        }
+        retryAtMs = 0L
+        paused = true
+        pauseVersion++
         action.text = "Try this photo again"
-        statusTitle.text = "Let’s try that one again"
-        statusDetail.text = error
+        statusTitle.text = if (kind == CaptureFailureKind.PERMANENT) "Your originals are safe" else "Take a moment"
+        statusDetail.text = if (kind == CaptureFailureKind.PERMANENT) error else "$error Three automatic retries didn’t finish this photo. Try again when you’re ready."
         overlay.update(0.0, 0.0, 0.0, 0.0, "paused")
     }
 
     private fun updateProgress() {
         counter.text = "${completed.size} of ${plan.size} photos"
         map.setPlan(plan.map { it.yaw to it.pitch }, completed, targetIndex.coerceAtMost(plan.lastIndex))
+        map.setSelectionLocked(manualTargetId != null)
+        directionAction.text = if (manualTargetId != null) "Follow my aim" else "Choose direction"
+        directionAction.contentDescription = if (manualTargetId != null) "Cancel the selected direction and follow wherever I point" else "Choose the next uncaptured direction from a list"
         counter.contentDescription = "${completed.size} of ${plan.size} photographs captured"
+    }
+
+    private fun selectDirection(index: Int) {
+        if (screen != "capture" || session == null || busy || interrupted || endingSession) return
+        val target = plan.getOrNull(index)?.takeIf { it.id !in completed } ?: return
+        manualTargetId = target.id; targetIndex = target.id
+        LocalDiagnostics.record(this, "direction_selected", session?.id, mapOf("targetId" to target.id))
+        guidance.reset(); savedUntilMs = 0L
+        updateProgress()
+        if (!paused) {
+            statusTitle.text = "Your next direction is set"
+            statusDetail.text = "Move toward its light. Follow my aim lets you choose freely again."
+        }
+        map.announceForAccessibility("Direction ${index + 1} selected. Move toward its light.")
+    }
+
+    private fun followAim() {
+        if (screen != "capture" || session == null || busy || interrupted || endingSession) return
+        manualTargetId = null
+        LocalDiagnostics.record(this, "direction_follow_aim", session?.id)
+        guidance.reset(); savedUntilMs = 0L
+        updateProgress()
+        if (!paused) {
+            statusTitle.text = "Explore in any direction"
+            statusDetail.text = "Point away from people or movement. We’ll choose the nearest remaining light."
+        }
+    }
+
+    private fun showDirectionChooser() {
+        if (screen != "capture" || session == null || busy || interrupted || endingSession) return
+        val currentPose = pose
+        val remaining = plan.filter { it.id !in completed }.sortedBy { target ->
+            if (currentPose == null) target.id.toDouble() else {
+                val p = Math.toRadians(currentPose.pitch); val tp = Math.toRadians(target.pitch)
+                -sin(p) * sin(tp) - cos(p) * cos(tp) * cos(Math.toRadians(wrapDegrees(target.yaw - currentPose.yaw)))
+            }
+        }
+        if (remaining.isEmpty()) return
+        val wasPaused = paused
+        val generation = sessionGeneration
+        val pauseMarker = pauseVersion
+        paused = true; guidance.reset()
+        val labels = arrayOf("Follow my aim · choose freely") + remaining.map { target ->
+            val height = when {
+                target.pitch >= 75 -> "Straight up"
+                target.pitch <= -75 -> "Straight down"
+                target.pitch > 10 -> "Above eye level"
+                target.pitch < -10 -> "Below eye level"
+                else -> "Eye level"
+            }
+            val delta = wrapDegrees(target.yaw - (currentPose?.yaw ?: 0.0))
+            val turn = if (abs(target.pitch) >= 75) "" else if (abs(delta) < 8) " · ahead" else " · ${abs(delta).roundToInt()}° ${if (delta > 0) "right" else "left"}"
+            "${target.id + 1}. $height$turn"
+        }
+        AlertDialog.Builder(this).setTitle("Choose your next direction")
+            .setItems(labels) { _, which ->
+                if (generation == sessionGeneration && screen == "capture" && !interrupted) {
+                    if (which == 0) followAim() else selectDirection(plan.indexOf(remaining[which - 1]))
+                }
+            }.setNegativeButton("Cancel", null).setOnDismissListener {
+                if (generation == sessionGeneration && pauseMarker == pauseVersion && screen == "capture" && !interrupted && activityResumed) {
+                    paused = wasPaused
+                    guidance.reset()
+                }
+            }.show()
     }
 
     private fun directionText(yaw: Double, pitch: Double, targetPitch: Double): String = when {
@@ -661,23 +845,35 @@ class MainActivity : Activity() {
         if (busy) { toast("Finishing this photo. Just a moment."); return }
         if (session == null) { sessionGeneration++; showHome(); return }
         val wasPaused = paused
+        val generation = sessionGeneration
+        val pauseMarker = pauseVersion
         paused = true
         guidance.reset()
-        AlertDialog.Builder(this).setTitle("Save this capture?")
-            .setMessage("${completed.size} original photos will stay safe. You can export them from Your captures. A new capture starts a new sphere.")
-            .setPositiveButton("Save & finish") { _, _ -> finishSession() }
-            .setNegativeButton("Keep going") { _, _ -> paused = wasPaused }
-            .setOnCancelListener { paused = wasPaused }.show()
+        val canCreate = completed.size >= 2
+        fun restoreCapture() {
+            if (generation == sessionGeneration && pauseMarker == pauseVersion && screen == "capture" && !interrupted && activityResumed) {
+                paused = wasPaused; guidance.reset()
+            }
+        }
+        AlertDialog.Builder(this).setTitle(if (canCreate) "Create your sphere now?" else "Save this capture?")
+            .setMessage("${completed.size} original photos will stay safe." + if (canCreate) " We’ll stitch them into a Photo Sphere. Uncaptured areas will stay blank." else " Capture at least two directions to create a sphere.")
+            .setPositiveButton(if (canCreate) "Save & create" else "Save & finish") { _, _ ->
+                if (generation == sessionGeneration) finishSession(createSphere = canCreate)
+            }
+            .setNegativeButton("Keep going") { _, _ -> restoreCapture() }
+            .setOnCancelListener { restoreCapture() }.show()
     }
 
-    private fun finishSession() {
+    private fun finishSession(createSphere: Boolean = false) {
         if (isDestroyed || io.isShutdown) return
         val current = session ?: return
         if (endingSession) return
         endingSession = true
+        val generateAfterFinish = createSphere || completed.size == plan.size
         val generation = sessionGeneration
+        retryAtMs = 0L
         paused = true; busy = true
-        tracker.stop(); camera.close(); cameraOpening = false
+        tracker.stop(); camera.endCaptureSession(); camera.close(); cameraOpening = false
         io.execute {
             try {
                 store.finish(current)
@@ -686,9 +882,12 @@ class MainActivity : Activity() {
                     busy = false
                     endingSession = false
                     savedSessionId = current.id
+                    LocalDiagnostics.record(this, "capture_session_finished", current.id, mapOf("savedCount" to completed.size,
+                        "targetCount" to plan.size, "createSphere" to (generateAfterFinish && activityResumed && !interrupted)))
                     session = null
                     sessionGeneration++
                     showSaved(completed.size, plan.size)
+                    if (generateAfterFinish && activityResumed && !interrupted) launchStitch(current.id, StitchQuality.FULL)
                 }
             } catch (e: Exception) { main.post {
                 if (isDestroyed || generation != sessionGeneration) return@post
@@ -696,7 +895,7 @@ class MainActivity : Activity() {
                 statusTitle.text = "Your originals are still safe"
                 statusDetail.text = "The session couldn’t be finalized. Try saving again."
                 action.text = "Retry saving"; action.isEnabled = true
-                action.setOnClickListener { finishSession() }
+                action.setOnClickListener { finishSession(createSphere = generateAfterFinish) }
                 finish.isEnabled = true
                 showError("Couldn’t finish the session", e)
             } }
@@ -716,7 +915,7 @@ class MainActivity : Activity() {
         content.addView(space(24))
         content.addView(text(if (interrupted) "Capture was interrupted, so we saved your originals. You can create a partial view or start a new sphere." else "Create an interactive Photo Sphere from your originals. Your photos stay safe on this phone.", 15, muted).apply { gravity = Gravity.CENTER })
         content.addView(space(34))
-        content.addView(button(if (count >= 2) "Create your sphere" else "Your captures", true) {
+        content.addView(button(if (count >= 2) "Create your sphere" else "Gallery", true) {
             val id = savedSessionId
             if (count >= 2 && id != null) requestStitch(id) else showSessions()
         }, LinearLayout.LayoutParams(-1, dp(58)))
@@ -728,93 +927,147 @@ class MainActivity : Activity() {
         installRoot(host)
     }
 
+    private data class GalleryEntry(val summary: SessionSummary, val result: PanoramaResult?, val state: StitchJobState?)
+
     private fun showSessions() {
         screen = "sessions"
         val host = FrameLayout(this).apply { setBackgroundColor(ink) }
         val scroll = ScrollView(this)
         val content = column(24)
         scroll.addView(content); host.addView(scroll)
-        content.addView(button("‹  Back", false) { showHome() }, LinearLayout.LayoutParams(dp(110), dp(48)))
+        val navigation = row()
+        navigation.addView(button("‹  Back", false) { showHome() }, LinearLayout.LayoutParams(dp(100), dp(48)))
+        navigation.addView(space(0), LinearLayout.LayoutParams(0, 0, 1f))
+        navigation.addView(button("New sphere", true) { startRequested() }, LinearLayout.LayoutParams(dp(140), dp(48)))
+        content.addView(navigation)
         content.addView(space(22))
-        content.addView(text("Your captures", 34, white, true))
-        content.addView(space(10))
-        content.addView(text("Make a sphere. Step back into the moment.", 16, muted))
+        content.addView(text("Gallery", 34, white, true))
+        content.addView(space(8))
+        content.addView(text("Step back into the moment.", 16, muted))
         content.addView(space(24))
-        val loading = text("Finding your photos…", 16, muted)
+        val loading = text("Finding your spheres…", 16, muted)
         content.addView(loading)
         installRoot(host)
         io.execute {
             try {
-                val entries = store.listSessions().map { it to runCatching { StitchRepository.result(this, it.id) }.getOrNull() }
+                val entries = store.listSessions().map { summary ->
+                    GalleryEntry(summary, runCatching { StitchRepository.result(this, summary.id) }.getOrNull(),
+                        runCatching { StitchRepository.state(this, summary.id) }.getOrNull())
+                }.filter { it.summary.capturedCount > 0 || it.summary.recoveredOriginalCount > 0 || it.result != null || it.state?.isActive == true }
                 main.post {
                     if (screen != "sessions" || shellRoot !== host || isDestroyed) return@post
                     content.removeView(loading)
-                    if (entries.isEmpty()) {
-                        content.addView(OrbitIllustration(this), LinearLayout.LayoutParams(-1, dp(210)))
-                        content.addView(text("Your first sphere starts here.", 21, white, true))
-                        content.addView(space(18))
-                        content.addView(button("Start a sphere", true) { startRequested() }, LinearLayout.LayoutParams(-1, dp(58)))
+                    val spheres = entries.filter { it.result != null || it.state?.isActive == true }
+                        .sortedWith(compareByDescending<GalleryEntry> { it.state?.isActive == true }.thenByDescending { it.summary.createdAtMs })
+                    val saved = entries.filter { it.result == null && it.state?.isActive != true }
+                    if (spheres.isEmpty()) {
+                        content.addView(OrbitIllustration(this), LinearLayout.LayoutParams(-1, dp(if (isLandscape()) 130 else 180)))
+                        content.addView(text(if (saved.isEmpty()) "Your first sphere starts here." else "Your photos are ready for the next step.", 21, white, true))
+                        content.addView(space(10))
+                        content.addView(text(if (saved.isEmpty()) "Capture a place and it will appear here, ready to explore." else "Create a sphere from a saved capture below.", 15, muted))
+                        content.addView(space(22))
+                    } else addGalleryCards(content, spheres)
+                    if (saved.isNotEmpty()) {
+                        val savedBody = column(0).apply { visibility = if (spheres.isEmpty()) View.VISIBLE else View.GONE }
+                        var built = false
+                        fun populateSaved() {
+                            if (!built) { built = true; addGalleryCards(savedBody, saved) }
+                        }
+                        if (savedBody.visibility == View.VISIBLE) populateSaved()
+                        val savedToggle = button("Saved captures · ${saved.size}", false) {
+                            populateSaved()
+                            savedBody.visibility = if (savedBody.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                        }.apply { contentDescription = "Show or hide ${saved.size} saved captures that have not become spheres yet" }
+                        content.addView(savedToggle, LinearLayout.LayoutParams(-1, dp(52)))
+                        content.addView(text("Your originals, ready whenever you are.", 13, muted).apply { setPadding(0, dp(9), 0, dp(15)) })
+                        content.addView(savedBody)
                     }
-                    entries.forEach { (summary, result) ->
-                        val item = column(20).apply { background = rounded(card, 22) }
-                        item.addView(text(SimpleDateFormat("EEE, d MMM · HH:mm", Locale.getDefault()).format(Date(summary.createdAtMs)), 19, white, true))
-                        item.addView(space(9))
-                        item.addView(text("${summary.capturedCount} / ${summary.targetCount} photos  ·  ${formatBytes(summary.bytes)}", 15, mint))
-                        item.addView(space(7))
-                        item.addView(text(if (summary.capturedCount == summary.targetCount && summary.targetCount > 0) "All planned directions captured" else "Partial capture · originals preserved", 13, muted))
-                        item.addView(space(16))
-                        addSphereActions(item, summary, result)
-                        item.addView(space(10))
-                        item.addView(button("Export originals", false) { requestExport(summary) }, LinearLayout.LayoutParams(-1, dp(48)))
-                        content.addView(item, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
-                    }
-                    content.addView(text("Export before uninstalling. ZIP files contain original photos and any location you enabled.", 13, muted))
+                    content.addView(space(10))
+                    content.addView(text("Stored on this phone. Open a sphere to export a copy before uninstalling.", 13, muted))
                 }
-            } catch (e: Exception) { main.post { loading.text = "Couldn’t read captures: ${e.message}" } }
+            } catch (e: Exception) { main.post {
+                if (screen == "sessions" && shellRoot === host && !isDestroyed) loading.text = "Couldn’t open your gallery. Please try again."
+            } }
         }
     }
 
-    private fun addSphereActions(item: LinearLayout, summary: SessionSummary, initialResult: PanoramaResult?) {
+    private fun addGalleryCards(parent: LinearLayout, entries: List<GalleryEntry>) {
+        var pair: LinearLayout? = null
+        entries.forEachIndexed { index, entry ->
+            val item = column(16).apply { background = rounded(card, 22) }
+            val date = SimpleDateFormat("d MMM yyyy · HH:mm", Locale.getDefault()).format(Date(entry.summary.createdAtMs))
+            val thumbnail = PanoramaThumbnailView(this).apply {
+                visibility = if (entry.result != null || entry.state?.isActive == true) View.VISIBLE else View.GONE
+                contentDescription = "Open sphere captured $date"
+                isFocusable = true
+            }
+            item.addView(thumbnail, LinearLayout.LayoutParams(-1, -2))
+            item.addView(text(date, 18, white, true).apply { setPadding(0, dp(13), 0, dp(10)) })
+            addSphereActions(item, entry.summary, entry.result, entry.state, thumbnail)
+            if (isLandscape()) {
+                if (index % 2 == 0) {
+                    pair = row().apply { gravity = Gravity.TOP }
+                    parent.addView(pair, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
+                }
+                pair!!.addView(item, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                    if (index % 2 == 0) marginEnd = dp(8) else marginStart = dp(8)
+                })
+                if (index == entries.lastIndex && index % 2 == 0)
+                    pair!!.addView(space(0), LinearLayout.LayoutParams(0, 0, 1f).apply { marginStart = dp(8) })
+            } else parent.addView(item, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
+        }
+    }
+
+    private fun addSphereActions(item: LinearLayout, summary: SessionSummary, initialResult: PanoramaResult?,
+        initialState: StitchJobState?, thumbnail: PanoramaThumbnailView) {
         var available = initialResult
-        val info = text("", 13, muted)
+        var latestState = initialState
+        val info = text("", 14, muted)
         val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100; visibility = View.GONE
             progressTintList = android.content.res.ColorStateList.valueOf(mint)
         }
+        val actions = row().apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL }
         val view = button("View sphere", true) { openSphere(summary.id) }
-        val generate = button(if (available == null) "Create Photo Sphere" else "Create again", available == null) { requestStitch(summary.id) }
-        val cancel = button("Cancel generation", false) { StitchRepository.cancel(this, summary.id) }.apply { visibility = View.GONE }
+        val generate = button("Create sphere", true) { requestStitch(summary.id) }
+        val more = button("···", false) { showGalleryMore(summary, available, latestState) }.apply { contentDescription = "More actions for this capture" }
+        val cancel = button("Stop creating", false) { StitchRepository.cancel(this, summary.id) }.apply { visibility = View.GONE }
+        thumbnail.setOnClickListener { if (available != null) openSphere(summary.id) }
         fun render(state: StitchJobState?) {
+            latestState = state
             if (state?.result != null) available = state.result
             val active = state?.isActive == true
+            thumbnail.showPreview(available?.preview)
+            thumbnail.visibility = if (available != null || active) View.VISIBLE else View.GONE
+            thumbnail.isEnabled = available != null
             view.visibility = if (available != null) View.VISIBLE else View.GONE
-            generate.visibility = if (active) View.GONE else View.VISIBLE
+            generate.visibility = if (active || available != null) View.GONE else View.VISIBLE
             generate.isEnabled = summary.capturedCount >= 2
-            generate.text = if (available == null) "Create Photo Sphere" else "Create again"
+            generate.text = if (state?.status == StitchStatus.FAILED) "Try creating again" else "Create sphere"
             cancel.visibility = if (active) View.VISIBLE else View.GONE
             cancel.isEnabled = state?.status != StitchStatus.CANCELLING
             progress.visibility = if (active) View.VISIBLE else View.GONE
             progress.progress = state?.progress ?: 0
             progress.isIndeterminate = active && (state?.progress ?: 0) == 0
             info.text = when {
-                active -> "${state?.message ?: "Preparing your sphere"} · ${state?.progress ?: 0}%"
-                state?.status in setOf(StitchStatus.FAILED, StitchStatus.INTERRUPTED, StitchStatus.CANCELLED) -> state?.message
-                available != null -> available!!.let { result ->
-                    "${result.width} × ${result.height} · ${String.format(Locale.US, "%.0f", result.width.toLong() * result.height / 1_000_000.0)} MP" +
-                        if (result.coverageFraction < .995) "\nPartial view · uncaptured areas stay blank" else "\nReady to look around"
-                }
-                summary.capturedCount == 0 -> "Capture some photos to create a sphere."
-                summary.capturedCount == 1 -> "At least two overlapping photos are needed to create a sphere."
-                summary.capturedCount < summary.targetCount -> "Create a partial view. Missing directions will stay blank."
-                else -> "Your originals are ready to become a 360° sphere."
+                state?.status == StitchStatus.CANCELLING -> "Stopping. Your originals are safe."
+                active -> "Creating your sphere · ${state?.progress ?: 0}%"
+                available != null -> if (available!!.coverageFraction < .995) "Ready to explore · partial view" else "Ready to look around"
+                summary.capturedCount == 0 && summary.recoveredOriginalCount > 0 -> "Recovered originals · ready to export"
+                state?.status in setOf(StitchStatus.FAILED, StitchStatus.INTERRUPTED, StitchStatus.CANCELLED) -> "Your originals are safe. Create a sphere when you’re ready."
+                summary.capturedCount < 2 -> "${summary.capturedCount} saved photo. A sphere needs at least two."
+                summary.capturedCount < summary.targetCount -> "${summary.capturedCount} saved photos · partial capture"
+                else -> "All ${summary.capturedCount} photos saved · ready to create"
             }
         }
         item.addView(info)
-        item.addView(progress, LinearLayout.LayoutParams(-1, dp(12)).apply { topMargin = dp(10) })
-        item.addView(view, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(12) })
-        item.addView(generate, LinearLayout.LayoutParams(-1, dp(50)).apply { topMargin = dp(10) })
+        item.addView(progress, LinearLayout.LayoutParams(-1, dp(10)).apply { topMargin = dp(10) })
+        actions.addView(view, LinearLayout.LayoutParams(0, dp(52), 1f))
+        actions.addView(generate, LinearLayout.LayoutParams(0, dp(52), 1f))
+        actions.addView(more, LinearLayout.LayoutParams(dp(52), dp(52)).apply { marginStart = dp(10) })
+        item.addView(actions, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
         item.addView(cancel, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(10) })
-        render(null)
+        render(initialState)
         item.post {
             if (screen == "sessions" && item.isAttachedToWindow && !isDestroyed) {
                 stitchObservers += StitchRepository.observe(this, summary.id) { state ->
@@ -822,6 +1075,27 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+    private fun showGalleryMore(summary: SessionSummary, result: PanoramaResult?, state: StitchJobState?) {
+        val options = mutableListOf("Photo details", "Export original photos (ZIP)")
+        if (result != null && state?.isActive != true) options += "Create this sphere again"
+        AlertDialog.Builder(this).setTitle("This capture").setItems(options.toTypedArray()) { _, selected ->
+            when (selected) {
+                0 -> AlertDialog.Builder(this).setTitle("Photo details").setMessage(buildString {
+                    append("${summary.capturedCount} of ${summary.targetCount} directions saved\n")
+                    append("Original photos: ${formatBytes(summary.bytes)}\n")
+                    result?.let {
+                        append("\nSphere: ${it.width} × ${it.height} pixels\n")
+                        append(String.format(Locale.US, "Estimated photographed coverage: %.1f%%\n", it.coverageFraction * 100))
+                    }
+                    if (state?.status in setOf(StitchStatus.FAILED, StitchStatus.INTERRUPTED)) append("\n${state?.message}\n")
+                    append("\nOriginal exports contain the photos, camera and motion records, and any location you enabled.")
+                }).setPositiveButton("Done", null).show()
+                1 -> requestExport(summary)
+                2 -> requestStitch(summary.id)
+            }
+        }.setNegativeButton("Done", null).show()
     }
 
     private fun openSphere(id: String) {
@@ -838,33 +1112,15 @@ class MainActivity : Activity() {
                 main.post {
                     if (isDestroyed || isFinishing || !loading.isShowing) return@post
                     loading.dismiss()
-                    var choice = StitchQuality.FULL
-                    fun label(name: String, width: Int) = "$name · ${width} × ${width / 2}\n${String.format(Locale.US, "%.0f", width.toLong() * width / 2_000_000.0)} megapixels"
-                    val note = "Creates a Photo Sphere on this phone. Your originals stay safe, and saved GPS is kept." +
-                        if (!plan.completePlanned) "\n\nThis capture has ${plan.sourceCount} of ${plan.targetCount} directions. Uncaptured areas will stay blank." else ""
-                    val options = column(20)
-                    options.addView(text(note, 15, muted))
-                    options.addView(space(18))
-                    val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-                    val choices = mutableListOf(StitchQuality.FULL to label("Full detail", plan.widthFull))
-                    if (plan.widthQuick < plan.widthFull) choices += StitchQuality.QUICK to label("Quicker", plan.widthQuick)
-                    choices.forEach { (quality, title) ->
-                        group.addView(RadioButton(this).apply {
-                            this.id = View.generateViewId(); text = title; setTextColor(white); textSize = 16f
-                            buttonTintList = android.content.res.ColorStateList.valueOf(mint)
-                            setPadding(0, dp(10), 0, dp(10))
-                            setOnCheckedChangeListener { _, checked -> if (checked) choice = quality }
-                        }, LinearLayout.LayoutParams(-1, -2))
-                    }
-                    group.check(group.getChildAt(0).id); options.addView(group)
-                    val scroll = ScrollView(this).apply { addView(options) }
-                    AlertDialog.Builder(this).setTitle("Create your sphere").setView(scroll)
+                    val note = "We’ll create it on your phone while you keep browsing. Your original photos stay safe." +
+                        if (!plan.completePlanned) "\n\nThis is a partial capture. Uncaptured areas will stay blank." else ""
+                    AlertDialog.Builder(this).setTitle("Create your sphere?").setMessage(note)
                         .setPositiveButton("Create") { _, _ ->
                             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED && !getPreferences(0).getBoolean("notificationAsked", false)) {
-                                pendingStitch = id to choice
+                                pendingStitch = id to StitchQuality.FULL
                                 getPreferences(0).edit().putBoolean("notificationAsked", true).apply()
                                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 22)
-                            } else launchStitch(id, choice)
+                            } else launchStitch(id, StitchQuality.FULL)
                         }.setNegativeButton("Later", null).show()
                 }
             } catch (error: Exception) { main.post {
@@ -906,6 +1162,7 @@ class MainActivity : Activity() {
     }
 
     private fun showCameraDetails() {
+        if (busy) { toast("Finishing this photo. Just a moment."); return }
         val info = cameraInfo
         val message = if (info == null) "The camera is still being checked." else buildString {
             append("Original photo: ${info.jpegWidth} × ${info.jpegHeight}\n")
@@ -919,9 +1176,15 @@ class MainActivity : Activity() {
             append("\nComplete camera capabilities and capture metadata are included in every exported session.")
         }
         val wasPaused = paused
+        val generation = sessionGeneration
+        val pauseMarker = pauseVersion
         paused = true; guidance.reset()
         AlertDialog.Builder(this).setTitle("Your camera").setMessage(message)
-            .setPositiveButton("Done", null).setOnDismissListener { paused = wasPaused }.show()
+            .setPositiveButton("Done", null).setOnDismissListener {
+                if (generation == sessionGeneration && pauseMarker == pauseVersion && screen == "capture" && !interrupted && activityResumed) {
+                    paused = wasPaused; guidance.reset()
+                }
+            }.show()
     }
 
     private fun hasLocationPermission() = checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED || checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED

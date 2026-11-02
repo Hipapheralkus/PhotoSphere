@@ -7,7 +7,9 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.util.AttributeSet
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import kotlin.math.max
 
 /** A target map, not an assertion of exact photographed or stitchable coverage. */
@@ -15,6 +17,8 @@ class SphereMapView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
+    var onTargetSelected: ((Int) -> Unit)? = null
+    var onChooseDirection: (() -> Unit)? = null
     private val density = resources.displayMetrics.density
     private val fontScale = resources.configuration.fontScale
     private val mint = Color.rgb(184, 243, 211)
@@ -34,11 +38,23 @@ class SphereMapView @JvmOverloads constructor(
     private var compact = false
     private var headerBaseline = dp(24f)
     private var lastSavedCount = -1
+    private var selectionLocked = false
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private var downX = 0f
+    private var downY = 0f
 
     init {
-        isClickable = false
+        isClickable = true
+        isFocusable = true
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
         contentDescription = "Sphere target map. No photo targets yet."
+    }
+
+    fun setSelectionLocked(locked: Boolean) {
+        if (selectionLocked == locked) return
+        selectionLocked = locked
+        updateDescription()
+        invalidate()
     }
 
     /** Points are (yaw, pitch) degrees; IDs refer to their position in this list. */
@@ -68,13 +84,49 @@ class SphereMapView @JvmOverloads constructor(
         active = newActive
         lastSavedCount = savedCount
         countLabel = "$savedCount / ${points.size}"
-        contentDescription = buildString {
-            append("Sphere target map. $savedCount of ${points.size} photo targets saved. ")
-            if (active >= 0) append("Current target ${active + 1}. ")
-            append("Filled dots are saved photos, hollow dots are remaining targets, and the large ring is the current target. ")
-            append("The map shows 360 degrees around you and 180 degrees from above to below.")
-        }
+        updateDescription()
         invalidate()
+    }
+
+    private fun updateDescription() {
+        contentDescription = buildString {
+            append("Sphere target map. ${lastSavedCount.coerceAtLeast(0)} of ${captured.size} photo targets saved. ")
+            if (active >= 0) append("Current target ${active + 1}. ")
+            append(if (selectionLocked) "This direction is selected. " else "Following your aim. ")
+            append("Filled dots are saved photos, hollow dots are remaining targets, and the large ring is the current target. ")
+            append("Activate to choose a direction from a list, or tap a hollow dot. The map spans every direction around, above and below.")
+        }
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        onChooseDirection?.invoke()
+        return true
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!isEnabled) return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { downX = event.x; downY = event.y; return true }
+            MotionEvent.ACTION_UP -> {
+                if (kotlin.math.abs(event.x - downX) > touchSlop || kotlin.math.abs(event.y - downY) > touchSlop) return true
+                var nearest = -1
+                var best = dp(18f) * dp(18f)
+                if (event.y >= mapBounds.top - dp(8f) && event.y <= mapBounds.bottom + dp(8f)) {
+                    for (index in captured.indices) if (!captured[index]) {
+                        val dx = event.x - (mapBounds.left + positions[index * 2] * mapBounds.width())
+                        val dy = event.y - (mapBounds.top + positions[index * 2 + 1] * mapBounds.height())
+                        val distance = dx * dx + dy * dy
+                        if (distance < best) { best = distance; nearest = index }
+                    }
+                }
+                if (nearest >= 0 && onTargetSelected != null) { super.performClick(); onTargetSelected?.invoke(nearest) }
+                else performClick()
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> return true
+        }
+        return true
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -110,7 +162,7 @@ class SphereMapView @JvmOverloads constructor(
         paint.textSize = labelSize
         paint.color = Color.argb(180, 245, 248, 246)
         paint.textAlign = Paint.Align.LEFT
-        canvas.drawText("YOUR SPHERE", dp(17f), headerBaseline, paint)
+        canvas.drawText(if (selectionLocked) "DIRECTION SELECTED" else "TAP A DOT TO CHOOSE", dp(17f), headerBaseline, paint)
         paint.color = mint
         paint.textAlign = Paint.Align.RIGHT
         canvas.drawText(countLabel, width - dp(17f), headerBaseline, paint)
@@ -159,9 +211,9 @@ class SphereMapView @JvmOverloads constructor(
             paint.textSize = dp(9f) * fontScale
             paint.textAlign = Paint.Align.LEFT
             paint.color = Color.argb(150, 245, 248, 246)
-            canvas.drawText("360° around", dp(17f), height - dp(8f), paint)
+            canvas.drawText(if (selectionLocked) "Finish this direction, then explore" else "Choose freely · 360° around", dp(17f), height - dp(8f), paint)
             paint.textAlign = Paint.Align.RIGHT
-            canvas.drawText("180° above + below", width - dp(17f), height - dp(8f), paint)
+            if (!selectionLocked && width / density >= 350f) canvas.drawText("Above + below", width - dp(17f), height - dp(8f), paint)
         }
     }
 

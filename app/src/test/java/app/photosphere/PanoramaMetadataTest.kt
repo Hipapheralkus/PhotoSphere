@@ -1,9 +1,9 @@
 package app.photosphere
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
 import org.w3c.dom.Element
 import java.io.StringReader
 import java.util.Locale
@@ -40,9 +40,9 @@ class PanoramaMetadataTest {
         val description = description(PanoramaMetadata.xmp(4096, 2048, 1, 0L, .15))
         for (index in 0 until description.attributes.length) {
             val attribute = description.attributes.item(index)
-            assertFalse("Unexpected heading: ${attribute.nodeName}", attribute.localName.orEmpty().contains("Heading", ignoreCase = true))
-            assertFalse("Unexpected GPS: ${attribute.nodeName}", attribute.localName.orEmpty().contains("GPS", ignoreCase = true))
-            assertFalse("Unexpected coordinate: ${attribute.nodeName}", attribute.localName.orEmpty() in listOf("Latitude", "Longitude", "Altitude"))
+            assertFalse(attribute.localName.orEmpty().contains("Heading", ignoreCase = true), "Unexpected heading: ${attribute.nodeName}")
+            assertFalse(attribute.localName.orEmpty().contains("GPS", ignoreCase = true), "Unexpected GPS: ${attribute.nodeName}")
+            assertFalse(attribute.localName.orEmpty() in listOf("Latitude", "Longitude", "Altitude"), "Unexpected coordinate: ${attribute.nodeName}")
         }
     }
 

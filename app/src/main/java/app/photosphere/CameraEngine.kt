@@ -52,6 +52,36 @@ class CameraEngine(context: Context) {
     private val displays = context.applicationContext.getSystemService(DisplayManager::class.java)
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var current: CameraRun? = null
+    private var nextBrightnessSessionId = 0L
+    @Volatile private var brightnessSession: BrightnessSession? = null
+
+    private class BrightnessSession(val id: Long, val requested: Boolean) {
+        @Volatile var acceptedPhotos = 0
+        var lastResolvedTimestamp = 0L // Accessed only on main.
+    }
+
+    /** Called once after the new sphere's session record is durable. */
+    fun beginCaptureSession(keepBrightnessSteady: Boolean): Unit = onMain {
+        val settings = BrightnessSession(++nextBrightnessSessionId, keepBrightnessSteady)
+        brightnessSession = settings
+        current?.let { run -> run.handler.post { run.setCaptureSession(settings) } }
+    }
+
+    /** A rejected or unrecorded first photo must never establish the sphere's exposure. */
+    fun resolveCapture(metadata: CaptureMetadata, accepted: Boolean): Unit = onMain {
+        val settings = brightnessSession ?: return@onMain
+        if (metadata.brightnessSessionId != settings.id) return@onMain
+        // UNKNOWN timestamp sources may restart their clock after reopening the camera.
+        if (metadata.sensorTimestampNs == settings.lastResolvedTimestamp) return@onMain
+        settings.lastResolvedTimestamp = metadata.sensorTimestampNs
+        if (accepted) settings.acceptedPhotos++
+        current?.let { run -> run.handler.post { run.resolveCapture(metadata, accepted) } }
+    }
+
+    fun endCaptureSession(): Unit = onMain {
+        brightnessSession = null
+        current?.let { run -> run.handler.post { run.setCaptureSession(null) } }
+    }
 
     val isReady: Boolean
         get() = current?.let { it.ready && !it.closing.get() && !it.busy.get() } == true
@@ -123,10 +153,13 @@ class CameraEngine(context: Context) {
         val completed = AtomicBoolean(false)
         var sent = false
         var saving = false
+        var savedToDisk = false
         var threeATimedOut = false
         var orientation = 0
         var displayRotationAtCapture = 0
         var result: TotalCaptureResult? = null
+        var brightnessSessionId: Long? = null
+        var lockRetainedBeforeCapture = false
         val images = linkedMapOf<Long, ByteArray>()
 
         fun fail(message: String) {
@@ -180,6 +213,51 @@ class CameraEngine(context: Context) {
         private lateinit var diagnostics: JSONObject
         private var requestedKeys = emptySet<CaptureRequest.Key<*>>()
         private var afMode = CaptureRequest.CONTROL_AF_MODE_OFF
+        private var captureSettings = brightnessSession
+        private var exposurePolicy = ExposureLockPolicy(false, false, false)
+        private var cameraRestartedWithinCaptureSession = false
+        private var pendingDecisionTimestamp: Long? = null
+
+        fun setCaptureSession(settings: BrightnessSession?) {
+            if (closing.get()) return
+            captureSettings = settings
+            cameraRestartedWithinCaptureSession = settings?.acceptedPhotos?.let { it > 0 } == true
+            exposurePolicy = ExposureLockPolicy(settings?.requested == true,
+                ::characteristics.isInitialized && characteristics[CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE] == true && requestedKeys.contains(CaptureRequest.CONTROL_AE_LOCK),
+                ::characteristics.isInitialized && characteristics[CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE] == true && requestedKeys.contains(CaptureRequest.CONTROL_AWB_LOCK))
+            pendingDecisionTimestamp = null
+            updatePreviewLocks()
+        }
+
+        fun resolveCapture(metadata: CaptureMetadata, accepted: Boolean) {
+            if (closing.get() || metadata.brightnessSessionId != captureSettings?.id ||
+                metadata.sensorTimestampNs != pendingDecisionTimestamp) return
+            pendingDecisionTimestamp = null
+            val locks = JSONObject(metadata.cameraMetadataJson).getJSONObject("brightnessLock")
+            if (exposurePolicy.resolve(accepted, locks.optBoolean("aeApplied"), locks.optBoolean("awbApplied")))
+                updatePreviewLocks()
+        }
+
+        private fun applyExposureLocks(builder: CaptureRequest.Builder) {
+            if (exposurePolicy.aeSupported) builder.set(CaptureRequest.CONTROL_AE_LOCK, exposurePolicy.aeLock)
+            if (exposurePolicy.awbSupported) builder.set(CaptureRequest.CONTROL_AWB_LOCK, exposurePolicy.awbLock)
+        }
+
+        private fun updatePreviewLocks() {
+            if (closing.get()) return
+            val builder = previewBuilder ?: return
+            try {
+                applyExposureLocks(builder)
+                session?.setRepeatingRequest(builder.build(), previewCallback, handler)
+            } catch (error: Exception) {
+                fatal("Could not update camera exposure: ${error.message}")
+            }
+        }
+
+        private fun releaseCandidate() {
+            pendingDecisionTimestamp = null
+            if (exposurePolicy.resolve(false, false, false)) updatePreviewLocks()
+        }
 
         private val displayListener: DisplayManager.DisplayListener = object : DisplayManager.DisplayListener {
             override fun onDisplayAdded(displayId: Int) = Unit
@@ -230,6 +308,7 @@ class CameraEngine(context: Context) {
                     cameraId = selected.first
                     characteristics = selected.second
                     requestedKeys = characteristics.availableCaptureRequestKeys.toSet()
+                    setCaptureSession(captureSettings)
                     diagnostics = JSONObject().put("schemaVersion", 1)
                         .put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
                         .put("sdk", Build.VERSION.SDK_INT).put("qualityRequested", quality.name)
@@ -357,7 +436,8 @@ class CameraEngine(context: Context) {
                         val fov = portraitFov(characteristics, choice.size)
                         preparedInfo = CameraInfo(cameraId, choice.size.width, choice.size.height,
                             previewSize.width, previewSize.height, characteristics[CameraCharacteristics.SENSOR_ORIENTATION] ?: 90,
-                            fov.first, fov.second, choice.maximumMode, diagnostics.toString(2))
+                            fov.first, fov.second, choice.maximumMode, diagnostics.toString(2),
+                            exposurePolicy.aeSupported, exposurePolicy.awbSupported)
                         // Wait for both a real preview result and a presented TextureView frame.
                     } catch (e: Exception) {
                         configured.close()
@@ -394,6 +474,7 @@ class CameraEngine(context: Context) {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
             builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+            applyExposureLocks(builder)
             if (Build.VERSION.SDK_INT >= 30 && requestedKeys.contains(CaptureRequest.CONTROL_ZOOM_RATIO))
                 builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1f)
             if (requestedKeys.contains(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE))
@@ -408,7 +489,7 @@ class CameraEngine(context: Context) {
                 latestPreview = result
                 maybeReady()
                 val pending = shot
-                if (pending != null && !pending.sent && threeAReady(result)) sendStill(pending)
+                if (pending != null && !pending.sent) prepareStill(pending, result)
             }
         }
 
@@ -440,6 +521,24 @@ class CameraEngine(context: Context) {
             return focusReady && exposureReady
         }
 
+        private fun aeApplied(result: CaptureResult?): Boolean = result?.get(CaptureResult.CONTROL_AE_LOCK) == true
+        private fun awbApplied(result: CaptureResult?): Boolean = result?.get(CaptureResult.CONTROL_AWB_LOCK) == true
+
+        private fun prepareStill(pending: Shot, result: CaptureResult?) {
+            if (pending.sent || result == null || !threeAReady(result)) return
+            val ae = result[CaptureResult.CONTROL_AE_STATE]
+            val awb = result[CaptureResult.CONTROL_AWB_STATE]
+            val aeSettled = ae == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
+                ae == CaptureResult.CONTROL_AE_STATE_LOCKED || ae == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED
+            val awbSettled = awb == CaptureResult.CONTROL_AWB_STATE_CONVERGED || awb == CaptureResult.CONTROL_AWB_STATE_LOCKED
+            if (exposurePolicy.prepare(aeSettled, awbSettled)) {
+                // Wait for a result from the locked preview, not merely the submitted request.
+                updatePreviewLocks()
+                return
+            }
+            if (exposurePolicy.confirmed(aeApplied(result), awbApplied(result))) sendStill(pending)
+        }
+
         fun beginShot(pending: Shot) {
             if (closing.get() || !ready || session == null) {
                 busy.set(false)
@@ -447,6 +546,7 @@ class CameraEngine(context: Context) {
                 return
             }
             shot = pending
+            pending.brightnessSessionId = captureSettings?.id
             if (pending.destination.exists()) {
                 failShot(pending, "The destination already exists; no photograph was overwritten.")
                 return
@@ -460,10 +560,11 @@ class CameraEngine(context: Context) {
                     }
                     session!!.capture(trigger.build(), previewCallback, handler)
                 } catch (e: Exception) { failShot(pending, "Could not start focus: ${e.message}"); return }
-            } else if (threeAReady(latestPreview)) sendStill(pending)
+            } else prepareStill(pending, latestPreview)
             handler.postDelayed({
                 if (shot === pending && !pending.sent && !pending.completed.get()) {
                     pending.threeATimedOut = true
+                    if (exposurePolicy.settleTimedOut(aeApplied(latestPreview), awbApplied(latestPreview))) updatePreviewLocks()
                     sendStill(pending)
                 }
             }, 1_200)
@@ -492,6 +593,7 @@ class CameraEngine(context: Context) {
 
         private fun submitStill(pending: Shot, rotation: Int) {
             try {
+                pending.lockRetainedBeforeCapture = exposurePolicy.retained
                 pending.displayRotationAtCapture = rotation
                 pending.orientation = ((characteristics[CameraCharacteristics.SENSOR_ORIENTATION] ?: 90) - rotation + 360) % 360
                 val request = camera!!.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
@@ -565,7 +667,8 @@ class CameraEngine(context: Context) {
             val base = CaptureMetadata(timestamp, result[CaptureResult.SENSOR_EXPOSURE_TIME],
                 result[CaptureResult.SENSOR_SENSITIVITY], result[CaptureResult.LENS_FOCAL_LENGTH],
                 result[CaptureResult.LENS_FOCUS_DISTANCE], pending.orientation, outputSize.width, outputSize.height,
-                jpeg.size.toLong(), 0L, metadataJson)
+                jpeg.size.toLong(), 0L, metadataJson, pending.brightnessSessionId)
+            pendingDecisionTimestamp = timestamp
             pending.saving = true
             try {
                 saver.execute {
@@ -582,6 +685,7 @@ class CameraEngine(context: Context) {
                             Files.move(temp.toPath(), pending.destination.toPath())
                         }
                         temp = null
+                        pending.savedToDisk = true
                         busy.set(false)
                         pending.saved(base.copy(durationMs = SystemClock.elapsedRealtime() - pending.startedMs))
                     } catch (e: Exception) {
@@ -589,7 +693,12 @@ class CameraEngine(context: Context) {
                         busy.set(false)
                         pending.fail("Could not save the original photograph: ${e.message}")
                     } finally {
-                        handler.post { if (shot === pending) { shot = null; resetFocus() } }
+                        handler.post {
+                            if (shot === pending) {
+                                if (!pending.savedToDisk) releaseCandidate()
+                                shot = null; resetFocus()
+                            }
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -601,7 +710,7 @@ class CameraEngine(context: Context) {
         private fun failShot(pending: Shot, message: String) {
             if (pending.saving || pending.completed.get()) return
             pending.images.clear()
-            if (shot === pending) { shot = null; busy.set(false); resetFocus() }
+            if (shot === pending) { releaseCandidate(); shot = null; busy.set(false); resetFocus() }
             pending.fail(message)
         }
 
@@ -609,6 +718,7 @@ class CameraEngine(context: Context) {
             if (closing.get() || afMode != CaptureRequest.CONTROL_AF_MODE_AUTO) return
             try {
                 previewBuilder?.let { builder ->
+                    applyExposureLocks(builder)
                     builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
                     session?.capture(builder.build(), null, handler)
                     builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
@@ -623,6 +733,15 @@ class CameraEngine(context: Context) {
                 .put("displayRotationDegreesAtCapture", pending.displayRotationAtCapture)
                 .put("threeAWaitTimedOut", pending.threeATimedOut).put("gpsRequested", pending.location != null)
                 .put("captureResultFrameNumber", result.frameNumber)
+                .put("brightnessLock", JSONObject()
+                    .put("requested", exposurePolicy.requested)
+                    .put("aeSupported", exposurePolicy.aeSupported).put("awbSupported", exposurePolicy.awbSupported)
+                    .put("aeRequested", result.request[CaptureRequest.CONTROL_AE_LOCK] == true)
+                    .put("awbRequested", result.request[CaptureRequest.CONTROL_AWB_LOCK] == true)
+                    .put("aeApplied", aeApplied(result)).put("awbApplied", awbApplied(result))
+                    .put("retainedFromAcceptedPhoto", pending.lockRetainedBeforeCapture)
+                    .put("reacquiredAfterCameraRestart", cameraRestartedWithinCaptureSession)
+                    .put("fallbackReason", exposurePolicy.fallbackReason ?: JSONObject.NULL))
                 .put("sensorTimestampNs", result[CaptureResult.SENSOR_TIMESTAMP])
                 .put("sensorTimestampSource", characteristics[CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE])
                 .put("sensorOrientation", characteristics[CameraCharacteristics.SENSOR_ORIENTATION])

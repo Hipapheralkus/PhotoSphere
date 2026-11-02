@@ -1,9 +1,12 @@
 #include <jni.h>
 #include <opencv2/core.hpp>
-#include <opencv2/features2d.hpp>
+#include <opencv2/features.hpp>
+#include <opencv2/geometry.hpp>
 #include <opencv2/flann.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/stitching/detail/seam_finders.hpp>
+#include "photometric_balance.hpp"
 
 #include <algorithm>
 #include <array>
@@ -415,9 +418,353 @@ int refineGraph(std::vector<Frame>& frames, const std::vector<Edge>& edges, Prog
     return componentCount;
 }
 
+cv::Matx33d rotationStep(const cv::Vec3d& vector) {
+    const double angle = cv::norm(vector);
+    if (angle < 1e-12) return cv::Matx33d::eye();
+    const cv::Vec3d axis = vector * (1.0 / angle);
+    const cv::Matx33d cross(0, -axis[2], axis[1], axis[2], 0, -axis[0], -axis[1], axis[0], 0);
+    return cv::Matx33d::eye() + cross * std::sin(angle) + cross * cross * (1 - std::cos(angle));
+}
+
+cv::Vec3d rotationVector(const cv::Matx33d& rotation) {
+    const double angle = std::acos(bounded((rotation(0, 0) + rotation(1, 1) + rotation(2, 2) - 1) * 0.5, -1.0, 1.0));
+    const cv::Vec3d antisymmetric(rotation(2, 1) - rotation(1, 2), rotation(0, 2) - rotation(2, 0), rotation(1, 0) - rotation(0, 1));
+    return antisymmetric * (angle < 1e-7 ? 0.5 : angle / (2 * std::sin(angle)));
+}
+
+/** Joint robust ray adjustment avoids averaging inconsistent pair rotations equally. */
+double refineRays(std::vector<Frame>& frames, std::vector<Edge>& edges, Progress& progress) {
+    const int count = static_cast<int>(frames.size());
+    std::vector<int> offset(count, -1), seenComponents;
+    int variables = 0;
+    for (int i = 0; i < count; ++i) {
+        frames[i].rotation = frames[i].prior;
+        if (frames[i].component < 0) continue;
+        if (std::find(seenComponents.begin(), seenComponents.end(), frames[i].component) == seenComponents.end())
+            seenComponents.push_back(frames[i].component);
+        else { offset[i] = variables; variables += 3; }
+    }
+    const int focalOffset = variables++;
+    double logFocal = 0, damping = 0.001;
+    auto rayAtScale = [](const cv::Vec3d& source, double focal, cv::Vec3d* derivative) {
+        const cv::Vec3d point(source[0] / (source[2] * focal), source[1] / (source[2] * focal), 1);
+        const double length = cv::norm(point);
+        const cv::Vec3d ray = point * (1 / length);
+        if (derivative) {
+            const cv::Vec3d raw(-point[0], -point[1], 0);
+            *derivative = (raw - ray * ray.dot(raw)) * (1 / length);
+        }
+        return ray;
+    };
+    auto evaluate = [&](const std::vector<cv::Matx33d>& rotations, double focalLog, double robustScale,
+                        cv::Mat* hessian, cv::Mat* gradient) {
+        const double focal = std::exp(focalLog);
+        double cost = 0;
+        auto row = [&](double residual, const std::array<int, 7>& indices, const std::array<double, 7>& jacobian, int size) {
+            const double relative = residual / robustScale;
+            const double robustWeight = 1 / std::sqrt(1 + relative * relative);
+            cost += 2 * robustScale * robustScale * (std::sqrt(1 + relative * relative) - 1);
+            if (!hessian) return;
+            for (int a = 0; a < size; ++a) {
+                gradient->at<double>(indices[a]) += robustWeight * jacobian[a] * residual;
+                for (int b = 0; b < size; ++b)
+                    hessian->at<double>(indices[a], indices[b]) += robustWeight * jacobian[a] * jacobian[b];
+            }
+        };
+        for (const Edge& edge : edges) {
+            const double pairWeight = std::sqrt(std::min(1.0, 100.0 / edge.inliers.size()));
+            for (const Observation& match : edge.inliers) {
+                cv::Vec3d derivativeA, derivativeB;
+                const cv::Vec3d a = rotations[edge.a] * rayAtScale(match.a, focal, &derivativeA);
+                const cv::Vec3d b = rotations[edge.b] * rayAtScale(match.b, focal, &derivativeB);
+                const cv::Vec3d focalDerivative = rotations[edge.a] * derivativeA - rotations[edge.b] * derivativeB;
+                const cv::Matx33d ja(0, a[2], -a[1], -a[2], 0, a[0], a[1], -a[0], 0);
+                const cv::Matx33d jb(0, -b[2], b[1], b[2], 0, -b[0], -b[1], b[0], 0);
+                for (int dimension = 0; dimension < 3; ++dimension) {
+                    std::array<int, 7> indices{}; std::array<double, 7> jacobian{};
+                    int size = 0;
+                    for (int k = 0; k < 3; ++k) {
+                        if (offset[edge.a] >= 0) { indices[size] = offset[edge.a] + k; jacobian[size++] = ja(dimension, k) * pairWeight; }
+                        if (offset[edge.b] >= 0) { indices[size] = offset[edge.b] + k; jacobian[size++] = jb(dimension, k) * pairWeight; }
+                    }
+                    indices[size] = focalOffset; jacobian[size++] = focalDerivative[dimension] * pairWeight;
+                    row((a[dimension] - b[dimension]) * pairWeight, indices, jacobian, size);
+                }
+            }
+        }
+        for (int i = 0; i < count; ++i) if (offset[i] >= 0) {
+            const cv::Vec3d delta = rotationVector(rotations[i] * frames[i].prior.t());
+            for (int k = 0; k < 3; ++k) {
+                const double priorWeight = k == 1 ? 0.05 : 0.35;
+                row(delta[k] * priorWeight, {offset[i] + k}, {priorWeight}, 1);
+            }
+        }
+        row(focalLog * 0.1, {focalOffset}, {0.1}, 1);
+        return cost;
+    };
+    std::vector<cv::Matx33d> rotations(count), candidate(count);
+    for (int i = 0; i < count; ++i) rotations[i] = frames[i].prior;
+    for (int stage = 0; stage < 2; ++stage) {
+        damping = 0.001;
+        const double robustScale = stage == 0 ? 0.02 : 0.007;
+        for (int iteration = 0; iteration < 45; ++iteration) {
+            if (iteration % 5 == 0) progress.report(48, "Refining individual visual matches and lens scale");
+            cv::Mat hessian = cv::Mat::zeros(variables, variables, CV_64F);
+            cv::Mat gradient = cv::Mat::zeros(variables, 1, CV_64F), step;
+            const double currentCost = evaluate(rotations, logFocal, robustScale, &hessian, &gradient);
+            for (int i = 0; i < variables; ++i) hessian.at<double>(i, i) += damping * std::max(1.0, hessian.at<double>(i, i));
+            if (!cv::solve(hessian, -gradient, step, cv::DECOMP_CHOLESKY)) { damping *= 10; continue; }
+            candidate = rotations;
+            for (int i = 0; i < count; ++i) if (offset[i] >= 0) {
+                cv::Vec3d change(step.at<double>(offset[i]), step.at<double>(offset[i] + 1), step.at<double>(offset[i] + 2));
+                const double length = cv::norm(change);
+                if (length > radians(4)) change *= radians(4) / length;
+                cv::Vec3d delta = rotationVector(rotationStep(change) * rotations[i] * frames[i].prior.t());
+                delta[0] = bounded(delta[0], -radians(5), radians(5));
+                delta[1] = bounded(delta[1], -radians(25), radians(25));
+                delta[2] = bounded(delta[2], -radians(5), radians(5));
+                candidate[i] = rotationStep(delta) * frames[i].prior;
+            }
+            const double proposedFocal = bounded(logFocal + bounded(step.at<double>(focalOffset), -0.04, 0.04), std::log(0.85), std::log(1.20));
+            const double nextCost = evaluate(candidate, proposedFocal, robustScale, nullptr, nullptr);
+            if (nextCost < currentCost) {
+                rotations.swap(candidate); logFocal = proposedFocal; damping = std::max(1e-7, damping * 0.4);
+                if (currentCost - nextCost < 1e-7 * std::max(1.0, currentCost)) break;
+            } else {
+                damping *= 5;
+                if (damping > 1e6) break;
+            }
+        }
+    }
+    const double focal = std::exp(logFocal);
+    for (int i = 0; i < count; ++i) {
+        frames[i].rotation = rotations[i];
+        frames[i].hfov = degrees(2 * std::atan(std::tan(radians(frames[i].hfov / 2)) / focal));
+        frames[i].vfov = degrees(2 * std::atan(std::tan(radians(frames[i].vfov / 2)) / focal));
+    }
+    for (Edge& edge : edges) for (Observation& match : edge.inliers) {
+        match.a = rayAtScale(match.a, focal, nullptr); match.b = rayAtScale(match.b, focal, nullptr);
+    }
+    return focal;
+}
+
+struct SeamPatch { cv::Mat weight, gain; cv::Point corner; cv::Size size; };
+struct SeamPlan {
+    int width = 0, height = 0, padding = 0;
+    int64_t estimatedPeakBytes = 0, retainedBytes = 0;
+    double maximumGain = 1;
+    double lowFrequencySigma = 0, maximumLowFrequencyCorrection = 0, rmsLowFrequencyCorrection = 0;
+    cv::Mat lowFrequencyCorrection;
+    std::vector<SeamPatch> patches;
+};
+
+SeamPlan prepareSeams(const std::vector<Frame>& frames, int64_t memoryBudget, Progress& progress) {
+    SeamPlan plan;
+    plan.width = std::max(64, std::min(768, static_cast<int>(768 * std::sqrt(48.0 / frames.size())) / 16 * 16));
+    // Includes graph-cut storage, the source low-pass temporaries and the small
+    // broad/narrow RGB canvases. No full-resolution float canvas is allocated.
+    const int64_t maximumArea = std::min<int64_t>(4000000, (memoryBudget - 64LL * MIB) / 112);
+    if (maximumArea <= 0) throw std::runtime_error("Not enough memory for image boundary optimization");
+    std::vector<cv::Mat> masks, scores;
+    std::vector<cv::Point> corners;
+    cv::Mat directions, bestScore;
+    int64_t totalArea = 0;
+    for (;;) {
+        plan.height = plan.width / 2; plan.padding = plan.width / 6;
+        const int canvasWidth = plan.width + 2 * plan.padding;
+        directions.create(plan.height, canvasWidth, CV_32FC3);
+        bestScore = cv::Mat::zeros(plan.height, canvasWidth, CV_32FC1);
+        for (int y = 0; y < plan.height; ++y) for (int x = 0; x < canvasWidth; ++x) {
+            const double longitude = (x - plan.padding + 0.5) * 2 * PI / plan.width - PI;
+            const double latitude = PI / 2 - (y + 0.5) * PI / plan.height;
+            directions.at<cv::Vec3f>(y, x) = cv::Vec3f(std::cos(latitude) * std::sin(longitude), -std::sin(latitude), std::cos(latitude) * std::cos(longitude));
+        }
+        masks.clear(); scores.clear(); corners.clear(); totalArea = 0;
+        for (size_t i = 0; i < frames.size(); ++i) {
+            if (i % 6 == 0) progress.report(50, "Planning image boundaries across the sphere");
+            const Frame& frame = frames[i];
+            const cv::Matx33d inverse = frame.rotation.t();
+            const double tanH = std::tan(radians(frame.hfov / 2)), tanV = std::tan(radians(frame.vfov / 2));
+            const double hLimit = 1 - 1.0 / frame.orientedSourceSize.width, vLimit = 1 - 1.0 / frame.orientedSourceSize.height;
+            cv::Mat mask = cv::Mat::zeros(plan.height, canvasWidth, CV_8UC1);
+            cv::Mat score = cv::Mat::zeros(plan.height, canvasWidth, CV_32FC1);
+            for (int y = 0; y < plan.height; ++y) for (int x = 0; x < canvasWidth; ++x) {
+                const cv::Vec3f world = directions.at<cv::Vec3f>(y, x);
+                const cv::Vec3d camera = inverse * cv::Vec3d(world[0], world[1], world[2]);
+                if (camera[2] <= 0) continue;
+                const double horizontal = std::abs(camera[0] / (camera[2] * tanH));
+                const double vertical = std::abs(camera[1] / (camera[2] * tanV));
+                if (horizontal >= hLimit || vertical >= vLimit) continue;
+                mask.at<uchar>(y, x) = 255;
+                const double z2 = camera[2] * camera[2];
+                const float value = static_cast<float>(z2 * z2 * z2 * z2 * bounded(std::min(1 - horizontal, 1 - vertical) / 0.12, 0, 1));
+                score.at<float>(y, x) = value;
+                bestScore.at<float>(y, x) = std::max(bestScore.at<float>(y, x), value);
+            }
+            cv::Rect bounds = cv::boundingRect(mask);
+            if (bounds.empty()) throw std::runtime_error("Seam resolution cannot represent an image footprint");
+            bounds = (cv::Rect(bounds.x - 2, bounds.y - 2, bounds.width + 4, bounds.height + 4) & cv::Rect(0, 0, canvasWidth, plan.height));
+            masks.push_back(mask(bounds).clone()); scores.push_back(score(bounds).clone()); corners.push_back(bounds.tl());
+            totalArea += bounds.area();
+        }
+        if (totalArea <= maximumArea) break;
+        const int smaller = std::max(64, static_cast<int>(plan.width * std::sqrt(static_cast<double>(maximumArea) / totalArea) * 0.97) / 16 * 16);
+        if (smaller >= plan.width || plan.width <= 64) throw std::runtime_error("Not enough memory for image boundary optimization");
+        plan.width = smaller;
+    }
+    plan.estimatedPeakBytes = totalArea * 112 + 64LL * MIB;
+    std::vector<cv::Mat> images;
+    images.reserve(frames.size());
+    for (size_t i = 0; i < frames.size(); ++i) {
+        progress.report(51 + static_cast<int>(3 * i / frames.size()), "Preparing exposure and seam detail");
+        const Frame& frame = frames[i];
+        cv::Mat image = cv::imread(frame.path, cv::IMREAD_REDUCED_COLOR_4);
+        if (image.empty()) throw std::runtime_error("Cannot decode a photograph for seam optimization");
+        if (std::max(image.cols, image.rows) > 1024) {
+            const double shrink = 1024.0 / std::max(image.cols, image.rows);
+            cv::resize(image, image, cv::Size(), shrink, shrink, cv::INTER_AREA);
+        }
+        const cv::Matx33d inverse = frame.rotation.t();
+        const double fx = image.cols / (2 * std::tan(radians(frame.hfov / 2))), fy = image.rows / (2 * std::tan(radians(frame.vfov / 2)));
+        cv::Mat mapX(masks[i].size(), CV_32FC1), mapY(masks[i].size(), CV_32FC1);
+        for (int y = 0; y < mapX.rows; ++y) for (int x = 0; x < mapX.cols; ++x) {
+            const cv::Vec3f world = directions.at<cv::Vec3f>(corners[i].y + y, corners[i].x + x);
+            const cv::Vec3d camera = inverse * cv::Vec3d(world[0], world[1], world[2]);
+            const double z = std::max(1e-6, camera[2]);
+            mapX.at<float>(y, x) = static_cast<float>(fx * camera[0] / z + (image.cols - 1) * 0.5);
+            mapY.at<float>(y, x) = static_cast<float>(fy * camera[1] / z + (image.rows - 1) * 0.5);
+        }
+        cv::Mat warped;
+        cv::remap(image, warped, mapX, mapY, cv::INTER_LINEAR, cv::BORDER_CONSTANT);
+        images.push_back(std::move(warped));
+    }
+    directions.release();
+    progress.report(55, "Balancing overlapping photographs");
+    auto balance = photosphere::balanceExposure(images, corners, masks);
+    plan.maximumGain = balance.maximumGain;
+    std::vector<cv::UMat> floatImages, seamMasks;
+    for (size_t i = 0; i < images.size(); ++i) {
+        cv::UMat floating, restricted;
+        images[i].convertTo(floating, CV_32FC3);
+        cv::Mat allowed = masks[i].clone();
+        // Preserve each view's central region. Otherwise a featureless ceiling can
+        // win an unrestricted graph cut and erase a nearby light from another view.
+        for (int y = 0; y < allowed.rows; ++y) for (int x = 0; x < allowed.cols; ++x)
+            if (scores[i].at<float>(y, x) < 0.78f * bestScore.at<float>(corners[i].y + y, corners[i].x + x)) allowed.at<uchar>(y, x) = 0;
+        allowed.copyTo(restricted);
+        floatImages.push_back(std::move(floating)); seamMasks.push_back(std::move(restricted));
+    }
+    std::vector<cv::Mat>().swap(images); std::vector<cv::Mat>().swap(scores); bestScore.release();
+    progress.report(57, "Choosing seams that preserve image detail");
+    cv::detail::GraphCutSeamFinder seamFinder(cv::detail::GraphCutSeamFinderBase::COST_COLOR_GRAD);
+    seamFinder.find(floatImages, corners, seamMasks);
+    plan.patches.resize(frames.size());
+    for (size_t i = 0; i < frames.size(); ++i) {
+        SeamPatch& patch = plan.patches[i];
+        patch.corner = corners[i]; patch.size = masks[i].size(); patch.gain = balance.gainMaps[i];
+        cv::Mat expanded;
+        cv::dilate(seamMasks[i].getMat(cv::ACCESS_READ), expanded, cv::Mat::ones(3, 3, CV_8U));
+        expanded.convertTo(patch.weight, CV_32FC1, 1.0 / 255);
+        cv::GaussianBlur(patch.weight, patch.weight, cv::Size(5, 5), 0.7);
+        plan.retainedBytes += patch.weight.total() * patch.weight.elemSize() + patch.gain.total() * patch.gain.elemSize();
+    }
+    // A narrow seam preserves detail but exposes low-frequency exposure steps.
+    // Build a two-band correction from the individual sources, not by blurring
+    // the finished panorama (which would retain halos from those existing steps).
+    // Original detail minus each source's low-pass remains selected by the seam;
+    // the low-pass itself is averaged smoothly over the full camera overlaps.
+    progress.report(58, "Smoothing exposure across the complete overlaps");
+    const cv::Size canvas(plan.width + 2 * plan.padding, plan.height);
+    cv::Mat broadSum = cv::Mat::zeros(canvas, CV_32FC3);
+    cv::Mat narrowSum = cv::Mat::zeros(canvas, CV_32FC3);
+    cv::Mat broadWeight = cv::Mat::zeros(canvas, CV_32FC1);
+    cv::Mat narrowWeight = cv::Mat::zeros(canvas, CV_32FC1);
+    plan.lowFrequencySigma = std::max(1.0, plan.width * (12.0 / 768.0));
+    for (size_t i = 0; i < frames.size(); ++i) {
+        progress.report(58, "Smoothing exposure across the complete overlaps");
+        const Frame& frame = frames[i];
+        const SeamPatch& patch = plan.patches[i];
+        cv::Mat normalizedMask, lowPass = floatImages[i].getMat(cv::ACCESS_READ).clone();
+        masks[i].convertTo(normalizedMask, CV_32FC1, 1.0 / 255);
+        lowPass.setTo(cv::Scalar(), masks[i] == 0);
+        cv::GaussianBlur(lowPass, lowPass, cv::Size(), plan.lowFrequencySigma, plan.lowFrequencySigma, cv::BORDER_CONSTANT);
+        cv::GaussianBlur(normalizedMask, normalizedMask, cv::Size(), plan.lowFrequencySigma, plan.lowFrequencySigma, cv::BORDER_CONSTANT);
+        const cv::Matx33d inverse = frame.rotation.t();
+        const double tanH = std::tan(radians(frame.hfov / 2)), tanV = std::tan(radians(frame.vfov / 2));
+        for (int y = 0; y < patch.size.height; ++y) {
+            const int gy = patch.corner.y + y;
+            const double latitude = PI / 2 - (gy + 0.5) * PI / plan.height;
+            const double cosine = std::cos(latitude), worldY = -std::sin(latitude);
+            auto* broad = broadSum.ptr<cv::Vec3f>(gy); auto* narrow = narrowSum.ptr<cv::Vec3f>(gy);
+            auto* bw = broadWeight.ptr<float>(gy); auto* nw = narrowWeight.ptr<float>(gy);
+            const auto* blurred = lowPass.ptr<cv::Vec3f>(y); const auto* normalizer = normalizedMask.ptr<float>(y);
+            const auto* mask = masks[i].ptr<uchar>(y); const auto* seamWeight = patch.weight.ptr<float>(y);
+            for (int x = 0; x < patch.size.width; ++x) {
+                if (!mask[x] || normalizer[x] < 1e-6f) continue;
+                const int gx = patch.corner.x + x;
+                const double longitude = (gx - plan.padding + 0.5) * 2 * PI / plan.width - PI;
+                const cv::Vec3d camera = inverse * cv::Vec3d(cosine * std::sin(longitude), worldY, cosine * std::cos(longitude));
+                if (camera[2] <= 0) continue;
+                // Match the full-resolution renderer's edge and incidence terms.
+                const double edge = std::min(1 - std::abs(camera[0] / (camera[2] * tanH)), 1 - std::abs(camera[1] / (camera[2] * tanV)));
+                const double feather = bounded(edge / 0.25, 0.0, 1.0);
+                const float fullWeight = static_cast<float>(feather * feather * (3 - 2 * feather) * camera[2] * camera[2]);
+                const float selectedWeight = seamWeight[x] < 1e-5f ? 0.f :
+                    std::max(1, cvRound(255 * seamWeight[x] * fullWeight)) / 255.f;
+                const cv::Vec3f color = blurred[x] / normalizer[x];
+                broad[gx] += color * fullWeight; bw[gx] += fullWeight;
+                narrow[gx] += color * selectedWeight; nw[gx] += selectedWeight;
+            }
+        }
+        // Each source is released as soon as its contribution has been reduced.
+        floatImages[i].release();
+    }
+    plan.lowFrequencyCorrection = cv::Mat::zeros(canvas, CV_32FC3);
+    double correctionSquares = 0; uint64_t correctionSamples = 0;
+    for (int y = 0; y < canvas.height; ++y) for (int x = 0; x < canvas.width; ++x) {
+        const float bw = broadWeight.at<float>(y, x), nw = narrowWeight.at<float>(y, x);
+        if (bw < 1e-6f || nw < 1e-6f) continue;
+        cv::Vec3f& correction = plan.lowFrequencyCorrection.at<cv::Vec3f>(y, x);
+        correction = broadSum.at<cv::Vec3f>(y, x) / bw - narrowSum.at<cv::Vec3f>(y, x) / nw;
+        for (int channel = 0; channel < 3; ++channel) {
+            correction[channel] = std::clamp(correction[channel], -80.f, 80.f);
+            if (x >= plan.padding && x < plan.padding + plan.width) {
+                plan.maximumLowFrequencyCorrection = std::max(plan.maximumLowFrequencyCorrection, static_cast<double>(std::abs(correction[channel])));
+                correctionSquares += correction[channel] * correction[channel]; ++correctionSamples;
+            }
+        }
+    }
+    plan.rmsLowFrequencyCorrection = correctionSamples ? std::sqrt(correctionSquares / correctionSamples) : 0;
+    plan.retainedBytes += plan.lowFrequencyCorrection.total() * plan.lowFrequencyCorrection.elemSize();
+    progress.report(59, "Seams and exposure corrections are ready");
+    return plan;
+}
+
+float sampleWeight(const cv::Mat& matrix, double x, double y) {
+    if (x < -0.5 || y < -0.5 || x > matrix.cols - 0.5 || y > matrix.rows - 0.5) return 0;
+    x = bounded(x, 0, matrix.cols - 1); y = bounded(y, 0, matrix.rows - 1);
+    const int left = static_cast<int>(x), top = static_cast<int>(y), right = std::min(left + 1, matrix.cols - 1), bottom = std::min(top + 1, matrix.rows - 1);
+    const double dx = x - left, dy = y - top;
+    return static_cast<float>((1 - dy) * ((1 - dx) * matrix.at<float>(top, left) + dx * matrix.at<float>(top, right)) +
+        dy * ((1 - dx) * matrix.at<float>(bottom, left) + dx * matrix.at<float>(bottom, right)));
+}
+
+cv::Vec3f sampleColor(const cv::Mat& matrix, double x, double y) {
+    const double gx = bounded(x, 0, matrix.cols - 1), gy = bounded(y, 0, matrix.rows - 1);
+    const int left = static_cast<int>(gx), top = static_cast<int>(gy), right = std::min(left + 1, matrix.cols - 1), bottom = std::min(top + 1, matrix.rows - 1);
+    const float dx = static_cast<float>(gx - left), dy = static_cast<float>(gy - top);
+    return (matrix.at<cv::Vec3f>(top, left) * (1 - dx) + matrix.at<cv::Vec3f>(top, right) * dx) * (1 - dy) +
+        (matrix.at<cv::Vec3f>(bottom, left) * (1 - dx) + matrix.at<cv::Vec3f>(bottom, right) * dx) * dy;
+}
+
+cv::Vec3f sampleGain(const SeamPatch& patch, double x, double y) {
+    return sampleColor(patch.gain, (x + 0.5) * patch.gain.cols / patch.size.width - 0.5,
+                       (y + 0.5) * patch.gain.rows / patch.size.height - 0.5);
+}
+
 struct RenderStats { double coverage = 0, pixelCoverage = 0; uint64_t coveredPixels = 0; };
 
-RenderStats compose(const std::vector<Frame>& frames, int width, cv::Mat& panorama, Progress& progress) {
+RenderStats compose(const std::vector<Frame>& frames, const SeamPlan& seams, int width, cv::Mat& panorama, Progress& progress) {
     const int height = width / 2;
     panorama = cv::Mat(height, width, CV_8UC3, cv::Scalar(32, 32, 32));
     cv::Mat weights = cv::Mat::zeros(height, width, CV_16UC1);
@@ -433,7 +780,8 @@ RenderStats compose(const std::vector<Frame>& frames, int width, cv::Mat& panora
     }
     for (size_t index = 0; index < frames.size(); ++index) {
         const Frame& frame = frames[index];
-        progress.report(50 + static_cast<int>(44 * index / frames.size()), "Blending original photo " + std::to_string(index + 1) + " of " + std::to_string(frames.size()));
+        progress.report(60 + static_cast<int>(34 * index / frames.size()), "Blending original photo " + std::to_string(index + 1) + " of " + std::to_string(frames.size()));
+        const SeamPatch& seam = seams.patches[index];
         // Default imread applies EXIF orientation. This is the full JPEG, not the matching thumbnail.
         const cv::Mat original = cv::imread(frame.path, cv::IMREAD_COLOR);
         if (original.empty()) throw std::runtime_error("Cannot decode a full-resolution original photograph");
@@ -462,6 +810,10 @@ RenderStats compose(const std::vector<Frame>& frames, int width, cv::Mat& panora
                     for (int step = 0; step < columnCount; ++step) {
                         int x = (firstColumn + step) % width;
                         if (x < 0) x += width;
+                        const double seamX = (x + 0.5) * seams.width / width + seams.padding - 0.5 - seam.corner.x;
+                        const double seamY = (y + 0.5) * seams.height / height - 0.5 - seam.corner.y;
+                        const float seamWeight = sampleWeight(seam.weight, seamX, seamY);
+                        if (seamWeight < 1e-5f) continue;
                         const double worldX = sinLongitude[x] * latitudeCosine, worldZ = cosLongitude[x] * latitudeCosine;
                         const double cameraZ = inverse(2, 0) * worldX + inverse(2, 1) * worldY + inverse(2, 2) * worldZ;
                         if (cameraZ <= 0) continue;
@@ -470,16 +822,17 @@ RenderStats compose(const std::vector<Frame>& frames, int width, cv::Mat& panora
                         if (u < 0 || v < 0 || u >= original.cols - 1 || v >= original.rows - 1) continue;
                         const double edge = std::min(1.0 - std::abs((u - cx) / (original.cols * 0.5)), 1.0 - std::abs((v - cy) / (original.rows * 0.5)));
                         const double feather = bounded(edge / 0.25, 0.0, 1.0);
-                        const int weight = std::max(1, cvRound(255.0 * feather * feather * (3 - 2 * feather) * cameraZ * cameraZ));
+                        const int weight = std::max(1, cvRound(255.0 * seamWeight * feather * feather * (3 - 2 * feather) * cameraZ * cameraZ));
                         const int oldWeight = weightRow[x], totalWeight = oldWeight + weight;
                         const int left = static_cast<int>(u), top = static_cast<int>(v);
                         const double du = u - left, dv = v - top;
                         const auto* upper = original.ptr<cv::Vec3b>(top);
                         const auto* lower = original.ptr<cv::Vec3b>(top + 1);
+                        const cv::Vec3f gain = sampleGain(seam, seamX, seamY);
                         if (oldWeight == 0) ++newCoverage;
                         for (int channel = 0; channel < 3; ++channel) {
                             const double sampled = ((1 - dv) * ((1 - du) * upper[left][channel] + du * upper[left + 1][channel]) +
-                                dv * ((1 - du) * lower[left][channel] + du * lower[left + 1][channel])) * frame.exposureGain;
+                                dv * ((1 - du) * lower[left][channel] + du * lower[left + 1][channel])) * gain[channel];
                             const double adjusted = bounded(sampled, 0.0, 255.0);
                             pixels[x][channel] = cv::saturate_cast<uchar>((pixels[x][channel] * oldWeight + adjusted * weight) / totalWeight);
                         }
@@ -489,8 +842,25 @@ RenderStats compose(const std::vector<Frame>& frames, int width, cv::Mat& panora
                 }
             });
             const double fraction = static_cast<double>(stripeEnd - firstRow) / std::max(1, lastRow - firstRow);
-            progress.report(50 + static_cast<int>(44 * (index + fraction) / frames.size()), "Blending original photo " + std::to_string(index + 1) + " of " + std::to_string(frames.size()));
+            progress.report(60 + static_cast<int>(34 * (index + fraction) / frames.size()), "Blending original photo " + std::to_string(index + 1) + " of " + std::to_string(frames.size()));
         }
+    }
+    for (int stripe = 0; stripe < height; stripe += 128) {
+        progress.report(94, "Finishing smooth exposure transitions");
+        cv::parallel_for_(cv::Range(stripe, std::min(height, stripe + 128)), [&](const cv::Range& rows) {
+            for (int y = rows.start; y < rows.end; ++y) {
+                auto* pixels = panorama.ptr<cv::Vec3b>(y);
+                const auto* coverage = weights.ptr<uint16_t>(y);
+                const double sy = (y + 0.5) * seams.height / height - 0.5;
+                for (int x = 0; x < width; ++x) {
+                    if (!coverage[x]) continue; // Missing directions remain honest neutral fill.
+                    const double sx = (x + 0.5) * seams.width / width + seams.padding - 0.5;
+                    const cv::Vec3f correction = sampleColor(seams.lowFrequencyCorrection, sx, sy);
+                    for (int channel = 0; channel < 3; ++channel)
+                        pixels[x][channel] = cv::saturate_cast<uchar>(pixels[x][channel] + correction[channel]);
+                }
+            }
+        });
     }
     RenderStats stats;
     double weightedCovered = 0, weightedTotal = 0;
@@ -597,9 +967,11 @@ std::string runStitch(const std::string& framesJson, const std::string& outputPa
     // any panorama. The per-feature allowance includes descriptors, four FLANN trees,
     // bearings, keypoints and the bounded neighbour graph's retained correspondences.
     const int featureLongSide = std::min(FEATURE_LONG_SIDE, static_cast<int>(std::sqrt(memoryBudget * 0.40 / 256.0)));
-    const int64_t matchingWorkspace = 256LL * featureLongSide * featureLongSide + 16LL * MIB;
+    const int64_t adjustmentVariables = static_cast<int64_t>(frames.size()) * 3 + 1;
+    const int64_t adjustmentWorkspace = 3 * adjustmentVariables * adjustmentVariables * sizeof(double);
+    const int64_t matchingWorkspace = 256LL * featureLongSide * featureLongSide + 16LL * MIB + adjustmentWorkspace;
     const int64_t thumbnailBytes = static_cast<int64_t>(frames.size()) * THUMB_LONG_SIDE * THUMB_LONG_SIDE * 3;
-    const int featureLimit = static_cast<int>(std::min<int64_t>(1200,
+    const int featureLimit = static_cast<int>(std::min<int64_t>(2400,
         (memoryBudget - matchingWorkspace - thumbnailBytes) / (static_cast<int64_t>(frames.size()) * 3072)));
     if (featureLongSide < 256 || featureLimit < 128) throw std::runtime_error("Memory budget is too small to visually register this many photographs");
     const int64_t matchingEstimate = matchingWorkspace + thumbnailBytes + static_cast<int64_t>(frames.size()) * featureLimit * 3072;
@@ -613,14 +985,12 @@ std::string runStitch(const std::string& framesJson, const std::string& outputPa
         const double fy = frame.orientedSourceSize.height / (2.0 * std::tan(radians(frame.vfov / 2)));
         supportedWidth = std::min(supportedWidth, 2.0 * PI * std::min(fx, fy));
     }
-    const int sourceSupportedWidth = static_cast<int>(std::floor(supportedWidth / 256.0)) * 256;
+    int sourceSupportedWidth = static_cast<int>(std::floor(supportedWidth / 256.0)) * 256;
     if (sourceSupportedWidth < 512) throw std::runtime_error("The source photographs do not support the minimum sphere resolution");
     if (width > sourceSupportedWidth) {
         width = sourceSupportedWidth;
         warnings.emplace_back("Output resolution was reduced to the angular sampling supported by the original photographs.");
     }
-    const int64_t compositionEstimate = 5LL * width * (width / 2) + largestSourceBytes + compositionWorkspace;
-    const int64_t estimatedPeak = std::max(compositionEstimate, matchingEstimate);
     const auto candidates = candidatePairs(frames);
     std::vector<Edge> edges;
     for (size_t i = 0; i < candidates.size(); ++i) {
@@ -630,6 +1000,17 @@ std::string runStitch(const std::string& framesJson, const std::string& outputPa
     }
     if (edges.empty()) throw std::runtime_error("No visually verified overlap was found. Capture additional overlapping, textured views; sensor poses alone were not labelled as alignment.");
     const int components = refineGraph(frames, edges, progress);
+    const double focalScale = refineRays(frames, edges, progress);
+    sourceSupportedWidth = static_cast<int>(std::floor(std::min(20480.0, supportedWidth * focalScale) / 256.0)) * 256;
+    if (sourceSupportedWidth < 512) throw std::runtime_error("Refined lens sampling does not support the minimum sphere resolution");
+    if (width > sourceSupportedWidth) {
+        width = sourceSupportedWidth;
+        warnings.emplace_back("Output resolution was reduced to the visually refined lens sampling.");
+    }
+    if (focalScale > 1.199 || focalScale < 0.851)
+        warnings.emplace_back("Lens-scale refinement reached its allowed limit; handheld parallax or uncertain calibration may still affect geometry.");
+    if (std::abs(focalScale - 1) > 0.08)
+        warnings.emplace_back("The fitted lens scale may be absorbing movement around the photographer rather than the lens. It is not a physical camera calibration.");
     int matchedImages = 0;
     size_t inlierCount = 0;
     double residualSum = 0, maxCorrection = 0;
@@ -645,7 +1026,7 @@ std::string runStitch(const std::string& framesJson, const std::string& outputPa
     if (matchedImages < static_cast<int>(frames.size())) warnings.emplace_back(std::to_string(frames.size() - matchedImages) + " photographs lack verified visual overlap and use their recorded orientation. Their alignment is unverified.");
     if (components > 1) warnings.emplace_back("The visual overlap graph has " + std::to_string(components) + " separate components. Recorded orientations position those components relative to each other.");
     if (meanResidual > 0.5) warnings.emplace_back("Visual alignment residual is elevated; inspect seams for parallax, moving subjects, or inaccurate lens calibration.");
-    warnings.emplace_back("This baseline uses rotational alignment, scalar exposure correction and feather blending; it does not correct depth-dependent parallax or moving objects.");
+    warnings.emplace_back("Rotation refinement and selective seams cannot fully correct depth-dependent parallax. Nearby objects or moving subjects may still show breaks at joins.");
     // Descriptor indices and thumbnails are not retained while full originals are decoded.
     for (Frame& frame : frames) {
         frame.index.reset(); frame.descriptors.release(); frame.colorThumb.release();
@@ -653,8 +1034,19 @@ std::string runStitch(const std::string& framesJson, const std::string& outputPa
     }
     const int matchedPairs = static_cast<int>(edges.size());
     std::vector<Edge>().swap(edges);
+    const SeamPlan seams = prepareSeams(frames, memoryBudget, progress);
+    const int64_t finalWorkspace = std::max<int64_t>(compositionWorkspace, seams.retainedBytes + largestSourceBytes + 32LL * MIB);
+    const int64_t finalAvailable = memoryBudget - largestSourceBytes - finalWorkspace;
+    const int finalMaximumWidth = static_cast<int>(std::floor(std::sqrt(std::max(0.0, 2.0 * finalAvailable / 5.0)) / 256.0)) * 256;
+    if (width > finalMaximumWidth) {
+        width = finalMaximumWidth;
+        warnings.emplace_back("Output resolution was reduced to include retained seam and exposure maps in the memory budget.");
+    }
+    if (width < 512) throw std::runtime_error("Not enough memory for original-resolution composition with seam maps");
+    const int64_t compositionEstimate = 5LL * width * (width / 2) + largestSourceBytes + finalWorkspace;
+    const int64_t estimatedPeak = std::max({compositionEstimate, matchingEstimate, seams.estimatedPeakBytes});
     cv::Mat panorama;
-    const RenderStats stats = compose(frames, width, panorama, progress);
+    const RenderStats stats = compose(frames, seams, width, panorama, progress);
     if (stats.coverage < 0.9995) warnings.emplace_back("Uncaptured directions remain neutral gray. The reported coverage is measured from rendered image footprints, not target counts.");
     progress.report(95, "Encoding the full-resolution sphere");
     output.write(panorama, 97, cv::IMWRITE_JPEG_SAMPLING_FACTOR_444);
@@ -668,7 +1060,8 @@ std::string runStitch(const std::string& framesJson, const std::string& outputPa
     output.commit(); previewOutput.commit();
     cv::FileStorage report("", cv::FileStorage::WRITE | cv::FileStorage::MEMORY | cv::FileStorage::FORMAT_JSON);
     report << "status" << "complete" << "projection" << "equirectangular"
-           << "alignmentMode" << "visual_rotation_refinement_with_pose_priors"
+           << "alignmentMode" << "robust_joint_ray_rotation_and_focal_refinement"
+           << "focalScale" << focalScale
            << "width" << width << "height" << width / 2 << "requestedWidth" << requestedWidth
            << "sourceSupportedWidth" << sourceSupportedWidth
            << "previewWidth" << previewWidth << "previewHeight" << previewWidth / 2
@@ -684,17 +1077,27 @@ std::string runStitch(const std::string& framesJson, const std::string& outputPa
            << "estimatedPeakBytes" << static_cast<double>(estimatedPeak)
            << "compositionEstimatedPeakBytes" << static_cast<double>(compositionEstimate)
            << "matchingEstimatedPeakBytes" << static_cast<double>(matchingEstimate)
+           << "seamEstimatedPeakBytes" << static_cast<double>(seams.estimatedPeakBytes)
+           << "seamRetainedBytes" << static_cast<double>(seams.retainedBytes)
+           << "seamCanvasWidth" << seams.width << "maximumPhotometricGain" << seams.maximumGain
+           << "lowFrequencyBlendSigmaPixels" << seams.lowFrequencySigma
+           << "maximumLowFrequencyCorrection" << seams.maximumLowFrequencyCorrection
+           << "rmsLowFrequencyCorrection" << seams.rmsLowFrequencyCorrection
            << "matchingLongSide" << featureLongSide << "maximumFeaturesPerImage" << featureLimit
            << "memoryBudgetBytes" << static_cast<double>(memoryBudget)
-           << "composition" << "original_resolution_rgb8_uint16_weight_feather"
+           << "composition" << "original_resolution_rgb8_constrained_graphcut_two_band_blend"
+           << "exposureModel" << "bounded_spatial_rgb_gain_grid_and_low_frequency_overlap_blend"
            << "neutralFillRgb" << "[" << 32 << 32 << 32 << "]"
            << "warnings" << "[";
     for (const std::string& warning : warnings) report << warning;
     report << "]" << "frames" << "[";
     for (size_t i = 0; i < frames.size(); ++i) {
         const Frame& frame = frames[i];
+        const cv::Scalar meanGain = cv::mean(seams.patches[i].gain);
         report << "{" << "index" << static_cast<int>(i) << "visuallyMatched" << (frame.component >= 0 ? 1 : 0)
-               << "component" << frame.component << "exposureGain" << frame.exposureGain << "rotation" << "[";
+               << "component" << frame.component << "exposureGain" << (meanGain[0] + meanGain[1] + meanGain[2]) / 3
+               << "exposureRgbGain" << "[" << meanGain[2] << meanGain[1] << meanGain[0] << "]"
+               << "rotation" << "[";
         for (double value : frame.rotation.val) report << value;
         report << "]" << "}";
     }

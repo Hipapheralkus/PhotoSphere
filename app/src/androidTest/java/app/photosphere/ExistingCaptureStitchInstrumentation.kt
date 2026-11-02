@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Xml
+import android.view.WindowManager
 import androidx.exifinterface.media.ExifInterface
 import org.json.JSONArray
 import org.json.JSONObject
@@ -79,7 +80,12 @@ class ExistingCaptureStitchInstrumentation : Instrumentation() {
             host = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             waitForIdleSync()
             var accepted = false
-            onMain { accepted = StitchRepository.start(targetContext, selectedId, quality) }
+            onMain {
+                // Keep this explicit interactive validation visible through the later export check.
+                // The flag belongs only to the test host and disappears when it finishes below.
+                host?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                accepted = StitchRepository.start(targetContext, selectedId, quality)
+            }
             check(accepted) { "Another stitching job is active; this runner did not start or cancel it" }
             val initial = StitchRepository.state(targetContext, selectedId) ?: error("Started job has no observable state")
             jobId = initial.jobId

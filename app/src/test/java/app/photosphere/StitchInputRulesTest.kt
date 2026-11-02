@@ -1,7 +1,8 @@
 package app.photosphere
 
-import org.junit.Assert.assertEquals
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Test
 
 class StitchInputRulesTest {
     @Test fun latestAcceptedJournalEntryWinsAndLaterRejectedRetakeDoesNotReplaceIt() {
@@ -18,8 +19,10 @@ class StitchInputRulesTest {
             listOf(StitchRecordSelection(-1, false), StitchRecordSelection(3, true)), setOf(3)))
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun acceptedUnknownTargetFailsInsteadOfInventingCoverage() {
-        StitchInputRules.latestAcceptedIndices(listOf(StitchRecordSelection(8, true)), setOf(3))
+        assertThrows(IllegalArgumentException::class.java) {
+            StitchInputRules.latestAcceptedIndices(listOf(StitchRecordSelection(8, true)), setOf(3))
+        }
     }
 }

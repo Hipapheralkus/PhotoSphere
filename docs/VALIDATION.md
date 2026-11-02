@@ -1,6 +1,16 @@
-# Prototype validation — 23 October 2026
+# Prototype validation
 
-## Build and automated checks
+## Current build validation — version 0.3.0, 2 November 2026
+
+`assembleDebug`, `assembleRelease` (R8), `assembleDebugAndroidTest`, `testDebugUnitTest` and `lintDebug` pass with the versions in [BUILDING.md](BUILDING.md). All 53 JVM tests pass: 22 guidance/coverage, 4 bounded retry, 4 exposure-lock policy, 3 pose association, 6 stitch sizing, 3 input selection, 7 lifecycle/publication and 4 spherical metadata. Native builds cover arm64-v8a and x86_64. The installable APK retains the existing update certificate, debugging, no network permission and disabled backup. Packaged license hashes and 16 KiB ZIP/native library alignment were checked.
+
+The final two-band native build also passed the isolated Android x86_64 synthetic runner: 48 mixed-orientation originals, mean absolute RGB error 2.39/255 against ground truth (limit 15), full and partial coverage, spherical/GPS metadata, unchanged original hashes, replacement cancellation, cancellation after native encoding, and ordinary viewer drag/pinch/reset/rotation. Test imagery is synthetic; this does not establish physical camera quality. The final app also passed the no-photo home/gallery, camera-preview rotation, target selection, follow-aim, accessible chooser, automatic retry and permanent-error pause runner in the emulator.
+
+The new default-on brightness option locks supported AE/AWB controls after settling, retains the lock only after durable acceptance, releases rejected first candidates, and restores automatic preview at session end. Per-photo metadata records actual result flags and fallback/restart behavior. Four policy tests cover acceptance, rejection, fallback and unsupported controls. The explicit two-JPEG `BrightnessSmokeInstrumentation` runner compiles, but **has not been run on the physical Pixel**: the user chose to continue without the phone. Existing capability records advertise both locks; that is not a substitute for testing real exposure/ISO/white-balance consistency. Rejected-first-photo recovery on hardware also remains unverified. RAW/DNG capture is not implemented.
+
+## Historical build validation — version 0.2.0
+
+### Build and automated checks
 
 Built with JDK 21, Gradle 9.4.1, Android Gradle Plugin 9.2.1 and Android SDK 37.0. The app targets Android 17 and requires Android 11 or newer.
 
@@ -79,18 +89,34 @@ adb shell am instrument -w -e fixture /data/local/tmp/photosphere-stitch-fixture
 
 Reports and screenshots stay under app cache `stitch-validation/<runId>/`. The test retains an explicitly marked synthetic capture. It never deletes or replaces a user's original capture. An additional explicitly selected `ExistingCaptureStitchInstrumentation` runner accepts `-e session <id> -e quality FULL` to test ordinary generation from an existing saved capture without taking photographs. Its report includes GPS verification booleans, not coordinates. The runner is absent from the normal APK.
 
+## Real capture and capture controls — version 0.3.0
+
+A complete 48-direction handheld capture was backed up locally before testing. It contained 53 original attempts, including five motion-rejected attempts; all originals were retained. The selected 48 accepted originals were hashed before and after generation. Private images, original manifests, location records and screenshots remain in ignored local storage, not this repository.
+
+The installed v0.2 baseline generated a 16,640 × 8,320 JPEG in 25.7 seconds, with 40 visually matched frames, 83 verified pairs and 1.815° mean visual residual. The first joint-ray refinement generated a 17,408 × 8,704 JPEG in 27.0 seconds, with 40 matched frames, 85 pairs and 0.492° mean residual. These are single runs with dynamically available memory, not a throughput guarantee or a matched-resolution quality benchmark. Both passed GPano, saved GPS/altitude and byte-identical-original checks. Eight mostly blank views lacked verified visual matches and retained recorded orientations.
+
+The final two-band build regenerated the same saved originals in an isolated local Android x86_64 emulator after the phone disconnected. It produced a 17,920 × 8,960 JPEG (160.6 MP, 37,104,560 bytes) in 107.1 seconds, with 40 visually matched frames, 88 pairs, 0.529° mean residual and complete rendered footprint coverage. The 1.164 fitted focal scale remains an alignment parameter, not lens calibration. Low-frequency correction used sigma 11.5 at the working seam resolution; the maximum correction was 64.70/255 and RMS 12.12/255. Visual comparison found substantially smoother flat-surface brightness while retaining sharp detail; local parallax breaks remain.
+
+The final master passed encoded-dimension, GPano, saved GPS/altitude, unchanged-original hashes and unchanged original-directory checks. Its 974,635,008-byte estimated peak stayed within the 1,258,291,200-byte configured budget. The full-resolution JPEG and private diagnostic report were copied back to the computer. This timing is an emulator measurement, not current Pixel performance. The final two-band/brightness build has not been installed on the disconnected phone, and this final master has not yet been copied there. Prior capture/gallery controls and the preceding seam build were exercised on the Pixel.
+
+The photographer confirmed turning around their body, rather than around the lens. This changes the viewpoint. The fitted focal scale (1.186 in the first refined run) therefore must not be interpreted as a measured lens calibration; it can absorb model error from parallax. Lower correspondence residual alone does not prove seamless scene reconstruction. Close furniture and repeated cabinet edges require visual inspection and can still have local breaks.
+
+The physical Pixel passed portrait, landscape, reverse-landscape and portrait-return capture checks while keeping the same activity/session/Camera2 preview. Map selection, follow-aim, the accessible direction list, bounded simulated retries and permanent-error pause were exercised without requesting a photograph. The test retains its empty session for transparent lifecycle validation; the gallery hides zero-photo sessions.
+
+The new plan has an exact spherical covering-radius check, dense-grid checks, 3° aiming perturbations, mixed portrait/landscape and roll stress, and a connected angular-overlap graph check. These establish geometry for the estimated field of view, not handheld image quality, translation tolerance or successful matching on textureless surfaces. A full 33-photo physical capture remains to be evaluated.
+
 ## Hosted CI
 
-The workflow is configured, but the first GitHub Actions job was refused before any runner or build step started. GitHub's annotation reports an account payment or spending-limit issue. Local build results above are independent of hosted CI; account billing settings were not changed.
+The first private-repository GitHub Actions job was refused before any runner or build step started. GitHub's annotation reports an account payment or spending-limit issue. Local build results above are independent of hosted CI; account billing settings were not changed.
 
 ## What remains to validate
 
-- A person completing a full sphere, including overhead and ground targets, and the comfort of the capture guidance.
+- A person completing the new 33-stop plan, including overhead and ground targets, and the comfort of the revised capture guidance.
 - Controlled movement during focus/exposure, low light, bright sky and near/far scenes.
 - Optional GPS permission and a fresh physical location fix.
 - Tracking and shutter speed over a longer handheld session, thermal behavior and battery use.
 - Actual positional tracking with ARCore and shared-camera resolution combinations; not implemented in this milestone.
-- Real-scene stitching quality, large full-detail output on Pixel, repeated-generation memory/thermal behavior, and external Android viewer compatibility.
+- A controlled capture around the lens centre, broader real-scene stitching quality, repeated-generation memory/thermal behavior, and external Android viewer compatibility.
 
 Physical test photographs, raw device diagnostics and screenshots stay local and are excluded from Git. The reference panorama is also excluded.
 

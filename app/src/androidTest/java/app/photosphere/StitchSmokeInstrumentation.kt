@@ -258,7 +258,8 @@ class StitchSmokeInstrumentation : Instrumentation() {
                 check(entry.size in 1..limit) { "Invalid fixture entry size." }
                 val destination = File(destinationRoot, entry.name).canonicalFile
                 check(destination.toPath().startsWith(destinationRoot.toPath()) && destination != destinationRoot) { "Unsafe fixture extraction path." }
-                check(destination.parentFile.isDirectory || destination.parentFile.mkdirs())
+                val parent = destination.parentFile ?: error("Fixture destination has no parent.")
+                check(parent.isDirectory || parent.mkdirs())
                 var copied = 0L
                 zip.getInputStream(entry).use { input -> FileOutputStream(destination).use { output ->
                     val buffer = ByteArray(64 * 1024)

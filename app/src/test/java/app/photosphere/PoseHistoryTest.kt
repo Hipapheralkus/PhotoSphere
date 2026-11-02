@@ -1,7 +1,7 @@
 package app.photosphere
 
-import org.junit.Assert.*
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.Test
 
 class PoseHistoryTest {
     private fun p(time: Long, yaw: Double = 0.0) = Pose(yaw, 0.0, 0.0, 0.0, time)

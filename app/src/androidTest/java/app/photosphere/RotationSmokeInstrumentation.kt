@@ -15,6 +15,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Surface
+import android.view.MotionEvent
+import android.view.KeyEvent
 import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
@@ -32,8 +34,9 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
 /**
- * Explicit androidTest-only runner. Uses the ordinary capture UI and reads private state only
- * for assertions. It pauses the newly created session before the first 650 ms capture hold.
+ * Explicit androidTest-only runner. Uses the ordinary capture UI and pauses the newly created
+ * session before the first 650 ms capture hold. Retry errors are injected only through reflection
+ * in this test APK; the application has no testing endpoint and no photograph is requested.
  */
 class RotationSmokeInstrumentation : Instrumentation() {
     private val ui = Handler(Looper.getMainLooper())
@@ -75,6 +78,7 @@ class RotationSmokeInstrumentation : Instrumentation() {
                     host.display?.rotation == Surface.ROTATION_0 &&
                     findButton(host.window.decorView, "Start a sphere") != null
             }
+            verifyHomeAndGallery(host, outputDirectory, report)
             onMain {
                 val start = findButton(host.window.decorView, "Start a sphere") ?: error("Start a sphere button missing")
                 check(start.isEnabled && start.performClick()) { "Start a sphere button was not clickable" }
@@ -166,6 +170,7 @@ class RotationSmokeInstrumentation : Instrumentation() {
                 SystemClock.sleep(350L)
                 snapshot(host, initial, rotation.name, rotation.display, rotation.landscape, outputDirectory, states)
             }
+            verifyCaptureChoicesAndRetry(host, initial.session, outputDirectory, report)
             report.put("cameraSessionPreserved", true).put("captureSessionPreserved", true)
                 .put("previewSurfacePreserved", true).put("unsolicitedCaptureCount", 0)
         } catch (error: Throwable) {
@@ -213,12 +218,178 @@ class RotationSmokeInstrumentation : Instrumentation() {
             putString("screenshotDirectory", outputDirectory.absolutePath)
             putString("retainedTestSessionId", testSession?.id)
             putString("stream", if (failure == null)
-                "\nPASS: portrait, landscape, reverse landscape, and portrait return preserve the activity, paused session, camera session and preview surface; landscape controls do not overlap the preview.\n"
+                "\nPASS: capture rotation preserves activity, session and preview; map selection, follow-aim, accessible chooser, bounded automatic retries and permanent-error pause are verified with no photographs taken.\n"
                 else "\nFAIL: $failure\n")
         })
     }
 
     private data class Rotation(val name: String, val requested: Int, val display: Int, val landscape: Boolean)
+
+    private fun verifyHomeAndGallery(host: MainActivity, directory: File, report: JSONObject) {
+        progress("Checking the simple home screen and gallery without taking a photo")
+        onMain {
+            check(findButton(host.window.decorView, "Capture options") != null)
+            check(views(host.window.decorView).filterIsInstance<TextView>().none { it.text.toString() == "Extra overlap" }) {
+                "Advanced capture options leaked onto the main screen"
+            }
+        }
+        screenshot(File(directory, "home.png"))
+        onMain { check(findButton(host.window.decorView, "Gallery")?.performClick() == true) }
+        waitUntil("gallery entries", 20_000) {
+            read<String>(host, "screen") == "sessions" &&
+                views(host.window.decorView).filterIsInstance<TextView>().none { it.text.toString() == "Finding your spheres…" }
+        }
+        var viewButton: Button? = null
+        onMain {
+            check(views(host.window.decorView).filterIsInstance<TextView>().none { it.text.toString().startsWith("Couldn’t open your gallery") })
+            viewButton = findButton(host.window.decorView, "View sphere")
+        }
+        if (viewButton != null) {
+            waitUntil("gallery card layout", 10_000) { viewButton!!.width > 0 && viewButton!!.height > 0 }
+            onMain {
+                val button = viewButton!!
+                val card = button.parent.parent as View
+                card.requestRectangleOnScreen(Rect(0, 0, card.width, card.height), true)
+            }
+            var image: Bitmap? = null
+            waitUntil("sampled gallery thumbnail", 15_000) {
+                val cacheField = PanoramaThumbnailView::class.java.getDeclaredField("cache").apply { isAccessible = true }
+                @Suppress("UNCHECKED_CAST")
+                val cache = cacheField.get(null) as android.util.LruCache<String, Bitmap>
+                val thumbnail = views(host.window.decorView).filterIsInstance<PanoramaThumbnailView>()
+                    .firstOrNull { it.isEnabled && it.getGlobalVisibleRect(Rect()) }
+                image = thumbnail?.let { read<String?>(it, "key") }?.let(cache::get)
+                image != null
+            }
+            check(image!!.width <= 640 && image!!.width == image!!.height * 2) { "Gallery decoded a full master instead of a small preview" }
+            report.put("galleryThumbnailWidth", image!!.width).put("galleryThumbnailHeight", image!!.height)
+            screenshot(File(directory, "gallery.png"))
+            val monitor = addMonitor(PanoramaViewerActivity::class.java.name, null, false)
+            var viewer: Activity? = null
+            try {
+                onMain { check(viewButton!!.performClick()) }
+                val opened = monitor.waitForActivityWithTimeout(15_000) ?: error("View sphere did not open the viewer")
+                viewer = opened
+                waitUntil("existing gallery sphere preview", 20_000) {
+                    views(opened.window.decorView).filterIsInstance<TextView>().any { it.text.toString().startsWith("Preview ") }
+                }
+                screenshot(File(directory, "gallery-viewer.png"))
+                report.put("galleryViewerVerified", true)
+            } finally { removeMonitor(monitor); onMain { viewer?.finish() } }
+            waitUntil("return from gallery viewer", 10_000) { read<Boolean>(host, "activityResumed") }
+        } else {
+            report.put("galleryViewerSkipped", "No completed sphere exists yet")
+            screenshot(File(directory, "gallery.png"))
+        }
+        onMain { check(findButton(host.window.decorView, "‹  Back")?.performClick() == true) }
+        waitUntil("return home from gallery", 10_000) { findButton(host.window.decorView, "Start a sphere") != null }
+        report.put("simpleHomeVerified", true).put("galleryNavigationVerified", true)
+    }
+
+    private fun views(root: View): Sequence<View> = sequence {
+        yield(root)
+        if (root is ViewGroup) for (index in 0 until root.childCount) yieldAll(views(root.getChildAt(index)))
+    }
+
+    private fun verifyCaptureChoicesAndRetry(host: MainActivity, session: CaptureSession, directory: File, report: JSONObject) {
+        progress("Checking deliberate map selection and returning to follow-aim")
+        onMain {
+            check(read<Boolean>(host, "paused"))
+            val map = read<SphereMapView>(host, "map")
+            val points = read<FloatArray>(map, "positions")
+            val graph = read<android.graphics.RectF>(map, "mapBounds")
+            val target = read<List<CaptureTarget>>(host, "plan")[1]
+            val x = graph.left + points[2] * graph.width()
+            val y = graph.top + points[3] * graph.height()
+            val now = SystemClock.uptimeMillis()
+            listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP).forEach { action ->
+                val event = MotionEvent.obtain(now, now, action, x, y, 0)
+                try { check(map.dispatchTouchEvent(event)) } finally { event.recycle() }
+            }
+            check(read<Int?>(host, "manualTargetId") == target.id && read<Int>(host, "targetIndex") == target.id) {
+                "Tapping an uncaptured map dot did not lock that direction"
+            }
+            check(read<Boolean>(host, "paused")) { "Choosing a direction unexpectedly resumed capture" }
+            val other = read<List<CaptureTarget>>(host, "plan")[0]
+            val acceptPose = MainActivity::class.java.getDeclaredMethod("onPose", Pose::class.java).apply { isAccessible = true }
+            val action = read<Button>(host, "action")
+            check(action.performClick() && !read<Boolean>(host, "paused"))
+            acceptPose.invoke(host, Pose(other.yaw, other.pitch, 0.0, 0.0, SystemClock.elapsedRealtimeNanos()))
+            check(read<Int>(host, "targetIndex") == target.id) { "Pointing at another light stole the deliberately selected target" }
+            check(action.performClick() && read<Boolean>(host, "paused"))
+            val direction = read<Button>(host, "directionAction")
+            check(direction.text.toString() == "Follow my aim" && direction.performClick())
+            check(read<Int?>(host, "manualTargetId") == null && direction.text.toString() == "Choose direction")
+            check(action.performClick() && !read<Boolean>(host, "paused"))
+            acceptPose.invoke(host, Pose(other.yaw, other.pitch, 0.0, 0.0, SystemClock.elapsedRealtimeNanos()))
+            check(read<Int>(host, "targetIndex") == other.id) { "Follow my aim did not select the nearest uncaptured direction" }
+            check(action.performClick() && read<Boolean>(host, "paused"))
+            check(map.performClick()) { "The accessible map action did not open the chooser" }
+        }
+        waitForIdleSync()
+        SystemClock.sleep(150L)
+        val chooser = uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText("Choose your next direction").orEmpty()
+        check(chooser.isNotEmpty()) { "The accessible direction list did not appear" }
+        screenshot(File(directory, "direction-chooser.png"))
+        sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitForIdleSync()
+        onMain { check(read<Boolean>(host, "paused")) { "Closing the chooser resumed a paused capture" } }
+        report.put("mapTargetSelectionVerified", true).put("manualLockSurvivesPoseChange", true)
+            .put("followAimVerified", true).put("accessibleDirectionChooserVerified", true)
+
+        progress("Checking retry rearming and pause boundaries without exposing a photograph")
+        onMain {
+            val failed = MainActivity::class.java.getDeclaredMethod("captureFailed", String::class.java,
+                CaptureFailureKind::class.java, Int::class.javaPrimitiveType!!).apply { isAccessible = true }
+            val generation = read<Int>(host, "sessionGeneration")
+            val action = read<Button>(host, "action")
+            check(action.performClick() && !read<Boolean>(host, "paused"))
+            failed.invoke(host, "Synthetic motion rejection", CaptureFailureKind.MOTION, generation)
+            check(!read<Boolean>(host, "paused") && read<Long>(host, "retryAtMs") > SystemClock.elapsedRealtime()) {
+                "A motion rejection required manual resume instead of scheduling a retry"
+            }
+            check(!read<Boolean>(host, "busy"))
+            check(action.performClick() && read<Boolean>(host, "paused") && read<Long>(host, "retryAtMs") == 0L) {
+                "Pause did not cancel a pending automatic retry"
+            }
+            check(action.performClick() && !read<Boolean>(host, "paused"))
+            repeat(4) { failed.invoke(host, "Synthetic recoverable error", CaptureFailureKind.TRANSIENT_CAMERA, generation) }
+            check(read<Boolean>(host, "paused") && read<Long>(host, "retryAtMs") == 0L) { "Automatic retries were not bounded" }
+            check(action.performClick() && !read<Boolean>(host, "paused"))
+            failed.invoke(host, "Synthetic storage/permission failure", CaptureFailureKind.PERMANENT, generation)
+            check(read<Boolean>(host, "paused") && read<Long>(host, "retryAtMs") == 0L) { "A permanent error was automatically retried" }
+            check(session.capturedCount == 0 && read<Set<Int>>(host, "completed").isEmpty())
+            check(File(session.directory, "originals").listFiles().orEmpty().isEmpty()) { "Capture UX validation unexpectedly took a photograph" }
+            check(action.performClick() && !read<Boolean>(host, "paused"))
+            check(read<SphereMapView>(host, "map").performClick())
+            failed.invoke(host, "Synthetic permanent error while choosing", CaptureFailureKind.PERMANENT, generation)
+        }
+        waitForIdleSync()
+        sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitForIdleSync()
+        onMain {
+            check(read<Boolean>(host, "paused") && read<Long>(host, "retryAtMs") == 0L) {
+                "Dismissing a direction dialog resumed capture after a permanent error"
+            }
+            check(session.capturedCount == 0 && File(session.directory, "originals").listFiles().orEmpty().isEmpty())
+            // After all rotation-preservation checks, close this test camera deliberately to
+            // exercise the visible Pause action during recovery without requesting any photo.
+            val action = read<Button>(host, "action")
+            check(action.performClick() && !read<Boolean>(host, "paused"))
+            val camera = read<CameraEngine>(host, "camera")
+            camera.close()
+            check(!camera.isReady)
+            MainActivity::class.java.getDeclaredMethod("captureFailed", String::class.java,
+                CaptureFailureKind::class.java, Int::class.javaPrimitiveType!!).apply { isAccessible = true }
+                .invoke(host, "Synthetic camera disconnect", CaptureFailureKind.TRANSIENT_CAMERA, read<Int>(host, "sessionGeneration"))
+            check(action.text.toString() == "Pause capture")
+            check(action.performClick() && read<Boolean>(host, "paused") && read<Long>(host, "retryAtMs") == 0L &&
+                !read<Boolean>(host, "cameraOpening") && !camera.isReady) { "Pause reopened an unavailable camera instead of stopping recovery" }
+        }
+        report.put("motionAutoRetryVerified", true).put("pauseCancelsRetryVerified", true)
+            .put("boundedRetryVerified", true).put("permanentErrorPauseVerified", true).put("dialogCannotUndoPermanentPause", true)
+            .put("pauseWhileCameraUnavailableVerified", true).put("cameraClosedOnlyForRetryTest", true)
+    }
     private data class Baseline(
         val session: CaptureSession,
         val preview: TextureView,

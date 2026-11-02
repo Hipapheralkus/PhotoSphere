@@ -1,0 +1,22 @@
+{
+  "opencvVersion": "5.0.0",
+  "mavenArtifactVersion": "5.0.0.1",
+  "commit": "40738fb16ceddb5fb3fea747585f7ce6abb0605b",
+  "files": [
+    {
+      "file": "seam_finders.cpp",
+      "url": "https://raw.githubusercontent.com/opencv/opencv/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/stitching/src/seam_finders.cpp",
+      "sha256": "7acebfdd666695c7e7174d52bd6d1433c06e093adc87b3ac7d91292dc998eedb"
+    },
+    {
+      "file": "exposure_compensate.cpp",
+      "url": "https://raw.githubusercontent.com/opencv/opencv/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/stitching/src/exposure_compensate.cpp",
+      "sha256": "3a990eeded2429ab249e1a1ca9d46c4257ede69af863f73dbb8f2c498703f661"
+    },
+    {
+      "file": "util.cpp",
+      "url": "https://raw.githubusercontent.com/opencv/opencv/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/stitching/src/util.cpp",
+      "sha256": "a0bbebd60fd59495ee17cea576d859a859190448abb44b81b94e691b20b054b8"
+    }
+  ]
+}

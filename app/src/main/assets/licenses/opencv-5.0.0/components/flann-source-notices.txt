@@ -1,4 +1,4 @@
-Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/opencv2/flann.hpp
+Source: https://github.com/opencv/opencv/blob/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/flann/include/opencv2/flann.hpp
 /*M///////////////////////////////////////////////////////////////////////////////////////
 //
 //  IMPORTANT: READ BEFORE DOWNLOADING, COPYING, INSTALLING OR USING.
@@ -41,8 +41,8 @@ Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/openc
 //
 //M*/
 
-Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/opencv2/flann/all_indices.h
-/***********************************************************************
+Source: https://github.com/opencv/opencv/blob/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/flann/include/opencv2/flann/all_indices.h
+/*M*********************************************************************
  * Software License Agreement (BSD License)
  *
  * Copyright 2008-2009  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
@@ -70,8 +70,8 @@ Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/openc
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *************************************************************************/
 
-Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/opencv2/flann/allocator.h
-/***********************************************************************
+Source: https://github.com/opencv/opencv/blob/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/flann/include/opencv2/flann/allocator.h
+/*M*********************************************************************
  * Software License Agreement (BSD License)
  *
  * Copyright 2008-2009  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
@@ -101,8 +101,21 @@ Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/openc
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *************************************************************************/
 
-Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/opencv2/flann/config.h
-/***********************************************************************
+Source: https://github.com/opencv/opencv/blob/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/flann/include/opencv2/flann/any.h
+/*
+ * (C) Copyright Christopher Diggins 2005-2011
+ * (C) Copyright Pablo Aguilar 2005
+ * (C) Copyright Kevlin Henney 2001
+ *
+ * Distributed under the Boost Software License, Version 1.0. (See
+ * accompanying file LICENSE_1_0.txt or copy at
+ * http://www.boost.org/LICENSE_1_0.txt
+ *
+ * Adapted for FLANN by Marius Muja
+ */
+
+Source: https://github.com/opencv/opencv/blob/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/flann/include/opencv2/flann/config.h
+/*M*********************************************************************
  * Software License Agreement (BSD License)
  *
  * Copyright 2008-2011  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
@@ -130,7 +143,7 @@ Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/openc
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *************************************************************************/
 
-Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/opencv2/flann/flann.hpp
+Source: https://github.com/opencv/opencv/blob/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/flann/include/opencv2/flann/flann.hpp
 /*M///////////////////////////////////////////////////////////////////////////////////////
 //
 //  IMPORTANT: READ BEFORE DOWNLOADING, COPYING, INSTALLING OR USING.
@@ -174,8 +187,8 @@ Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/openc
 //
 //M*/
 
-Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/opencv2/flann/hierarchical_clustering_index.h
-/***********************************************************************
+Source: https://github.com/opencv/opencv/blob/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/flann/include/opencv2/flann/hierarchical_clustering_index.h
+/*M*********************************************************************
  * Software License Agreement (BSD License)
  *
  * Copyright 2008-2011  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
@@ -205,8 +218,8 @@ Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/openc
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *************************************************************************/
 
-Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/opencv2/flann/saving.h
-/***********************************************************************
+Source: https://github.com/opencv/opencv/blob/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/flann/include/opencv2/flann/saving.h
+/*M*********************************************************************
  * Software License Agreement (BSD License)
  *
  * Copyright 2008-2009  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
@@ -234,7 +247,7 @@ Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/include/openc
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *************************************************************************/
 
-Source: https://github.com/opencv/opencv/blob/4.13.0/modules/flann/test/test_lshtable_badarg.cpp
+Source: https://github.com/opencv/opencv/blob/40738fb16ceddb5fb3fea747585f7ce6abb0605b/modules/flann/test/test_lshtable_badarg.cpp
 /*M///////////////////////////////////////////////////////////////////////////////////////
 //
 //  IMPORTANT: READ BEFORE DOWNLOADING, COPYING, INSTALLING OR USING.

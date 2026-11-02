@@ -1,8 +1,9 @@
 package app.photosphere
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Test
 
 class StitchSizingTest {
     @Test fun rotatedExifDimensionsAndFieldOfViewHaveIdenticalSampling() {
@@ -40,13 +41,17 @@ class StitchSizingTest {
         assertEquals(8192, sizes.quick)
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun impossibleMemoryBudgetFailsBeforeAllocatingCanvas() {
-        StitchSizing.choose(listOf(StitchSampling(6000, 8000, 60.0, 75.0)), 100L * StitchSizing.MIB)
+        assertThrows(IllegalArgumentException::class.java) {
+            StitchSizing.choose(listOf(StitchSampling(6000, 8000, 60.0, 75.0)), 100L * StitchSizing.MIB)
+        }
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun tinySourcesAreNotUpscaledToMinimumWidth() {
-        StitchSizing.choose(listOf(StitchSampling(32, 32, 90.0, 90.0)), StitchSizing.MAX_BUDGET)
+        assertThrows(IllegalArgumentException::class.java) {
+            StitchSizing.choose(listOf(StitchSampling(32, 32, 90.0, 90.0)), StitchSizing.MAX_BUDGET)
+        }
     }
 }
