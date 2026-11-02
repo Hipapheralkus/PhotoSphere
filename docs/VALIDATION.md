@@ -107,7 +107,7 @@ The new plan has an exact spherical covering-radius check, dense-grid checks, 3Â
 
 ## Hosted CI
 
-The first private-repository GitHub Actions job was refused before any runner or build step started. GitHub's annotation reports an account payment or spending-limit issue. Local build results above are independent of hosted CI; account billing settings were not changed.
+The [public-repository v0.3.0 run](https://github.com/Hipapheralkus/PhotoSphere/actions/runs/41492357464) passed SDK/toolchain installation, debug build, all JVM tests, lint and APK artifact upload on Linux for commit `94bccab829b1eaaa1ae66787d4bd62ebf216fdfd`. The first historical private-repository run had been refused before a runner started because of an account payment/spending-limit issue; account billing settings were not changed.
 
 ## What remains to validate
 
